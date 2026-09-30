@@ -1,18 +1,34 @@
 # Runbook：本地 MySQL 与服务端配置
 
-用于本地开发/测试环境的阿里云 RDS MySQL 或本机 MySQL。生产环境还必须配置可信 TLS，并使用独立账号和强随机凭证。
+> 目标：让网站连上数据库、配好密钥，能登录后台。做完这一步，`GET /api/health` 应该返回 `{"status":"ok","database":"ok"}`。
+
+## 流程总览
+
+```mermaid
+flowchart LR
+    A[建库建账号] --> B[复制并填写 .env.local]
+    B --> C[npm run db:migrate 建表]
+    C --> D[npm run dev 启动]
+    D --> E[curl /api/health 验证]
+```
+
+生产环境还要加 TLS 和独立账号（见下文折叠细节）；本地开发先跑通即可。
 
 ## 1. 准备数据库
 
-创建一个应用专用数据库和账号，授予该数据库所需的建表、索引和数据读写权限。RDS 需允许当前开发机或 Vercel 部署环境访问；尽量使用访问白名单和 TLS，不要开放到所有来源。
+建一个应用专用数据库和账号，只给它这个库的建表、索引和读写权限。
 
-连接 URL 格式：
+- RDS：把开发机（或 Vercel 出口）加入访问白名单，**不要对全网开放**。
+- 连接串格式：`mysql://<用户>:<密码>@<主机>:3306/<库名>`，特殊字符要 URL 编码。
 
-```text
-mysql://<url-encoded-user>:<url-encoded-password>@<host>:3306/<database>
-```
+<details>
+<summary>生产 TLS 与账号细节（点开）</summary>
 
-用户名或密码含 `@`、`/`、`:`、`#` 等字符时必须进行 URL 编码。数据库和账号由管理员在 MySQL/RDS 控制台创建；迁移命令不会自动创建数据库。
+- 生产 `NODE_ENV=production` 会强制校验服务端证书；若 RDS 的 CA 不在系统信任链，把 CA PEM 转 base64 放 `MYSQL_SSL_CA_BASE64`。
+- 预览环境和生产环境用**不同的库和不同的管理员 token**，避免测试邀请码混入生产。
+- 迁移命令不会自动建库，库和账号要在控制台先建好。
+
+</details>
 
 ## 2. 配置应用
 
@@ -20,58 +36,50 @@ mysql://<url-encoded-user>:<url-encoded-password>@<host>:3306/<database>
 cp .env.example .env.local
 ```
 
-编辑 `.env.local`，填入 `DATABASE_URL`、长随机 `ADMIN_API_TOKEN`、`APP_BASE_URL` 和 `INVITATION_ENCRYPTION_KEY`。管理员 token 可使用下面命令生成，然后把值放入本机 `.env.local` 和部署环境变量中：
+填下面这张表（“怎么生成”列可直接复制执行）：
 
-```bash
-openssl rand -base64 48
-```
+| 变量 | 用途（一句话） | 怎么生成/填 |
+| --- | --- | --- |
+| `DATABASE_URL` | 连哪个库 | 按第 1 节的格式拼 |
+| `ADMIN_API_TOKEN` | 后台登录密码 | `openssl rand -base64 48` |
+| `WORKER_TOKEN` | Worker 和网站对暗号的密钥，两边必须相同 | `openssl rand -hex 32` |
+| `APP_BASE_URL` | 本机填 `http://localhost:3000`；生产填最终 HTTPS 域名 | 手填 |
+| `INVITATION_ENCRYPTION_KEY` | 邀请码加密密钥，丢了就找不回已发链接 | `openssl rand -base64 32`，备份好 |
+| `QINIU_*`（5 个） | 七牛存储配置 | 见 [七牛 runbook](./qiniu-storage-and-jobs.md) |
+| `INVITATION_TTL_DAYS` | 邀请链接有效期，可选，默认 30 天 | `1–365` |
 
-发码 API 的密文密钥单独生成并安全备份；同一个部署环境稳定使用该 key：
+<sub>`INVITATION_ENCRYPTION_KEY` 同一环境不要换，换了自动发货重试就还原不出原来的链接。`.env.local` 绝不进 Git，也不要贴到聊天/工单里。</sub>
 
-```bash
-openssl rand -base64 32
-```
-
-生产 `APP_BASE_URL` 必须是最终对外的 HTTPS origin。`INVITATION_TTL_DAYS` 可选，默认 30 天；若配置，可设为 1–365 天。
-
-本地以 `NODE_ENV=development` 运行时数据库 TLS 不强制；production 会校验服务器证书。若 RDS 提供的 CA 不在系统信任链中，将 CA PEM 的 Base64 值放入 `MYSQL_SSL_CA_BASE64`。不要把 `.env.local`、数据库密码、管理员 token 或 CA 私钥提交到 Git。
-
-## 3. 应用 schema migrations
-
-在项目根目录执行：
+## 3. 建表
 
 ```bash
 npm run db:migrate
 ```
 
-Drizzle CLI 会读取 `.env.local`。命令成功后会建立用户、邀请码、用户/管理员会话、预设、限流、上传占位、生成任务、输出和审计表。重复运行是安全的；若 schema 后续有变化，先审核新 migration，再执行。
+成功后会有用户、邀请码、会话、分类、预设、上传占位、任务、输出、审计等表。重复跑是安全的；有新 migration 先看一眼 SQL 再跑。
 
-## 4. 检查服务
-
-启动应用：
+## 4. 启动并验证
 
 ```bash
 npm run dev
 ```
 
-另一个终端检查数据库连接：
+另开终端：
 
 ```bash
 curl --fail --silent --show-error http://localhost:3000/api/health
+# 期望 {"status":"ok","database":"ok"}
 ```
 
-成功响应：
+| 返回 | 含义 |
+| --- | --- |
+| `ok / ok` | 全部正常，继续 |
+| `database: unavailable`（503） | 连不上库：按顺序查 URL/密码 → 库名 → 账号授权 → 白名单 → TLS |
 
-```json
-{"status":"ok","database":"ok"}
-```
+## 5. 接下来
 
-`503` 的 `database: unavailable` 表示 API 当前不能连库；查看应用服务端日志，并依次确认 URL/凭证、数据库名、账号授权、MySQL/RDS 白名单与 TLS 配置。不要将 `.env.local` 内容或连接串贴到工单/聊天中。
+- 配七牛并传第一张图 → [七牛 runbook](./qiniu-storage-and-jobs.md)
+- 进后台发邀请码、管理风格 → [后台 runbook](./admin-console.md)
+- 让任务真出图 → [Worker runbook](./comfyui-worker.md)
 
-## 5. 当前能力边界
-
-- 已实现邀请码导入、兑换、当前会话查询和退出。
-- 已实现 `POST /api/admin/invitations/issue` 自动签发 API；调用前必须在服务端配置 `ADMIN_API_TOKEN`、`INVITATION_ENCRYPTION_KEY` 和 `APP_BASE_URL`；`INVITATION_TTL_DAYS` 可选，详见 [签发邀请码 runbook](./issue-invitation-links.md)。
-- 页面允许在没有数据库时浏览演示；这不代表认证或真实生成已经可用。
-- ComfyUI worker 程序与云端 Worker API 已实现；登录用户可直传七牛并创建队列任务。只有在 ComfyUI 主机配置共享 `WORKER_TOKEN`、启用风格 workflow 并运行 `npm run start:worker` 后，任务才会执行生成。
-- 管理操作入口是 `/admin`，邀请码撤销、用户启停及风格配置见 [后台管理 runbook](./admin-console.md)。
+<sub>当前能力：邀请码导入/兑换/退出、自动签发 API、七牛直传、任务队列、Worker 程序都已实现。没有数据库时页面只能看演示，接口会返回不可用。</sub>

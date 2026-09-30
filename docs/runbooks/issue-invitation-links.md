@@ -2,6 +2,15 @@
 
 淘宝自动发货优先直接调用 `POST /api/admin/invitations/issue`。管理员人工签发可使用 `/admin` 控制台，批量补发可使用 `scripts/create-invitations.mjs`。邀请链接可重复用于登录，直到过期或管理员撤销；用户退出只撤销当前会话，不会使原链接失效。API 将码以加密密文保存以支持订单重试；新版 CLI 导入会把码加密存储，后台可查看/复制。
 
+```mermaid
+flowchart TD
+    O[淘宝订单:orderRef] --> I[签发API:幂等签发]
+    I --> U[用户拿链接登录]
+    U --> R[退出后可重登]
+    I --> X[撤销/过期后拒绝]
+    X --> N[用新orderRef补发]
+```
+
 ## 前置条件
 
 1. 按 [本地 MySQL 与服务端配置](./local-mysql-and-auth.md) 应用 migrations。

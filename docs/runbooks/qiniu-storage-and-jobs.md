@@ -1,12 +1,23 @@
 # Runbook：七牛直传与任务 API
 
-本 runbook 配置七牛 Kodo 私有空间，并验证浏览器直传和 MySQL 队列任务。要执行真实 ComfyUI 生成，还需按[本机 Worker runbook](./comfyui-worker.md)配置并启动 Worker；Worker 离线时任务仍会留在 `queued`。
+> 目标：图片存到七牛私有空间，用户能上传照片并创建任务。记住关键设计：**图片字节永远不经过网站服务器**——浏览器和七牛直连，网站只发“限时通行证”。
 
-## 前置条件
+## 流程总览
 
-- 已按 [本地 MySQL runbook](./local-mysql-and-auth.md) 应用 migrations，`GET /api/health` 返回数据库正常。
-- 已有有效用户会话（邀请码兑换完成），正在本地运行应用或已部署目标站点。
-- 七牛 Kodo 已创建**私有空间**，完成 HTTPS 下载域名绑定；凭证只配置在服务端，切勿放入 `NEXT_PUBLIC_*` 变量、浏览器代码或发给用户。
+```mermaid
+sequenceDiagram
+    participant U as 用户浏览器
+    participant W as 网站
+    participant Q as 七牛私有空间
+    U->>W: ① POST /api/uploads<br/>(告诉网站:类型+大小)
+    W-->>U: ② 上传凭证<br/>(单key/10分钟/单次写入)
+    U->>Q: ③ 直传图片字节
+    U->>W: ④ POST /api/jobs<br/>(uploadId+预设+参数)
+    W->>Q: ⑤ 核验对象真的存在<br/>(大小/MIME对得上?)
+    W-->>U: ⑥ 任务已排队(job_id)
+```
+
+第 ⑥ 步只表示“图已存好、任务已记账”，**不代表已生成**。Worker 在线且预设配好 workflow 后才会开始画图（见 [Worker runbook](./comfyui-worker.md)）。
 
 ## 1. 配置七牛服务端变量
 
@@ -14,13 +25,10 @@
 
 | 变量 | 说明 |
 | --- | --- |
-| `QINIU_ACCESS_KEY` | 七牛 AccessKey，服务端使用 |
-| `QINIU_SECRET_KEY` | 七牛 SecretKey，服务端使用，严格保密 |
-| `QINIU_BUCKET` | 私有空间名称 |
-| `QINIU_UPLOAD_URL` | 与空间区域对应的 HTTPS 上传 endpoint |
-| `QINIU_PRIVATE_DOMAIN` | 该私有空间的 HTTPS 下载域名，不带路径 |
-
-常见区域上传 endpoint：
+| `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY` | 服务端专用，严格保密 |
+| `QINIU_BUCKET` | **私有空间**名 |
+| `QINIU_UPLOAD_URL` | 按 bucket 所在区域选（下表），不要猜 |
+| `QINIU_PRIVATE_DOMAIN` | 绑到该空间的 HTTPS 下载域名，如 `https://images.example.com` |
 
 | 区域 | `QINIU_UPLOAD_URL` |
 | --- | --- |
@@ -30,42 +38,34 @@
 | 北美 na0 | `https://up-na0.qiniup.com` |
 | 新加坡 as0 | `https://up-as0.qiniup.com` |
 
-按七牛控制台显示的实际 bucket region 选择 endpoint；不要猜测区域。`QINIU_PRIVATE_DOMAIN` 应是已绑定到该空间且使用 HTTPS 的下载域名，例如 `https://images.example.com`。本地开发通常访问 RDS 和七牛需要相应网络权限；配置变更后重启 Next.js。
+改完重启 Next.js。
 
-## 2. 配置七牛 CORS
+## 2. 配置七牛 CORS（否则浏览器传不上去）
 
-因为图片由浏览器直接上传到七牛，需在 bucket CORS 规则中允许实际网站 origin：
+在 bucket 的 CORS 规则里放行你的网站 origin：
 
-- Origins：本地测试 `http://localhost:3000`，生产填写正式站点 origin；不要无条件开放 `*`。
+- Origins：本地 `http://localhost:3000`，生产填正式域名；**不要写 `*`**。
 - Methods：`POST`、`OPTIONS`。
-- Allowed headers：至少包含 `Content-Type`；若控制台要求，可添加 `Origin`。
-- Expose headers：按调试需要暴露 `ETag`。
+- Allowed headers：至少 `Content-Type`（控制台要求的话再加 `Origin`）。
 
-CORS 只允许浏览器按规则发请求，不代替上传 token 的权限限制。服务端签发的 token 限定单个随机 key、单次写入、允许的 MIME 和最多 20 MiB；AK/SK 不发给浏览器。上传后对象是否存在、大小与 MIME 是否匹配由服务端通过 Kodo stat 再次核验。
+<sub>CORS 只是“允许浏览器敲门”，真正的权限在上传 token 里：限定单个随机 key、单次写入、指定 MIME、最多 20 MiB、10 分钟过期。AK/SK 永远不发给浏览器。</sub>
 
 ## 3. 检查配置与登录
-
-重启应用后访问：
 
 ```bash
 curl --fail --silent --show-error http://localhost:3000/api/health
 ```
 
-确认用户已兑换邀请码；`GET /api/auth/me` 应返回用户标识。没有会话时 `/api/uploads` 和任务接口返回 `401 unauthorized`。
+确认用户已用邀请码登录（`GET /api/auth/me` 能返回用户标识）。没登录时上传和任务接口返回 `401`。
 
-## 4. 浏览器端到端上传并创建任务
+## 4. 传一张图、建一个任务（页面点点就行）
 
-1. 以已登录用户打开创作页面，选择 JPEG、PNG 或 WebP；原始图片字节大小不设上限（实际受浏览器可解码能力限制）。
-2. 浏览器端自动处理图片：超过 2,000,000 像素时等比例缩小到不超过 2,000,000 像素并转为 JPEG；像素未超限但文件大于 20 MiB 时保留尺寸、转为 JPEG 压缩。处理后的上传文件不得超过 20 MiB。
-3. 选择预设，心情必选，补充文本最多 120 字。
-4. 点击“上传并创建任务”。客户端按如下顺序执行：
-   - `POST /api/uploads` 请求单 key 上传凭证；
-   - 浏览器将 multipart 文件内容直传 `QINIU_UPLOAD_URL`；
-   - `POST /api/jobs` 提交 upload ID、preset、白名单参数和幂等 UUID；
-   - 页面查看 `GET /api/jobs/{id}` 状态。
-5. 收到任务已排队表示图片处理、直传和任务持久化已完成，**不代表已生成**。Worker 在线且预设版本已配置可执行 workflow 后才会开始生成。
+1. 打开创作页，选 JPEG/PNG/WebP。
+2. 页面会自动预处理：超过 200 万像素就等比缩小并转 JPEG；太大就压质量，保证最终不超过 20 MiB。
+3. 选风格（心情必选，补充文字最多 120 字），点“上传并创建任务”。
 
-页面 API 调用示例（须使用有效的用户 Cookie；实际测试建议直接从登录浏览器操作，避免手动复制会话令牌）：
+<details>
+<summary>给想调接口的人：请求形状（点开）</summary>
 
 ```http
 POST /api/uploads
@@ -75,40 +75,39 @@ Cookie: <user-session-cookie>
 {"contentType":"image/jpeg","size":123456}
 ```
 
-创建任务的 JSON 形状：
-
 ```json
 {
-  "uploadId": "<POST /api/uploads 返回的 ID>",
-  "presetId": "cloud-nine",
-  "parameters": { "mood": "梦幻", "note": "一颗漂浮的小星球" },
-  "idempotencyKey": "<本次提交生成的 UUID>"
+  "uploadId": "<上一步返回的 ID>",
+  "presetId": "masterpiece-scream",
+  "parameters": { "mood": "惊讶", "note": "咖啡洒了" },
+  "idempotencyKey": "<本次点击生成的 UUID>"
 }
 ```
 
-上传对象 key、签名 URL 或七牛 token 不可由用户自行指定。`idempotencyKey` 对同一次提交重试必须保持不变；新一轮生成使用新的 UUID。当前限制每位用户最多一个 `queued`/`running` 任务，且每天最多创建 10 个任务。已消费的上传不能再次用于新任务。
+规则：`idempotencyKey` 是“这次点击”的身份证——重试用同一个值会返回原任务；新一轮生成用新值。每人同时只能有 1 个未完成任务，每天最多 10 次。一个上传只能用一次。
 
-## 5. 验证任务读取权限
+</details>
 
-```http
-GET /api/jobs
-Cookie: <user-session-cookie>
-```
+## 5. 查自己的任务和结果
 
-响应只包含当前用户任务，不包含对象 key、上传凭证或其他用户数据。用 `GET /api/jobs/{id}` 查询单项状态。伪造或其他用户的任务 ID 应返回 `404`。任务只有在 worker 成功回报输出后才会变成 `succeeded`；结果 API `GET /api/jobs/{id}/result` 仅对本人成功任务签发约 5 分钟有效的私有下载链接。当前尚无 worker，因此结果 API 还不能返回真实生成图。
+- `GET /api/jobs`：只列自己的任务，没有别人的，也没有对象 key。
+- `GET /api/jobs/{id}`：看状态（`queued → running → succeeded / failed`）。
+- `GET /api/jobs/{id}/result`：成功且是本人的任务，返回**约 5 分钟有效**的私有下载链接数组。
+
+<sub>链接过期就刷新页面重取，不要把链接存下来当永久地址。</sub>
 
 ## 常见问题
 
-| 现象 / 错误 | 检查方向 |
+| 现象 | 先查什么 |
 | --- | --- |
-| `/api/uploads` 返回 `503 storage_unavailable` | 检查 AccessKey、SecretKey、bucket、上传 endpoint 和私有下载域名是否都已服务端配置；查看服务端日志，勿打印密钥 |
-| 浏览器上传报 CORS / Network Error | 核对七牛 bucket CORS 是否包含当前 origin、POST/OPTIONS、HTTPS endpoint；检查 region endpoint 是否匹配 |
-| `/api/jobs` 返回 `422 upload_not_found_in_storage` | 确认浏览器上传请求确实成功且 key/token 没有被重复覆盖；等待服务端检查日志 |
-| `/api/jobs` 返回 `422 upload_object_mismatch` | 声明大小、Kodo stat 大小或 MIME 不匹配；使用支持的真实图片文件重试 |
-| 原图很大或像素很多 | 上传前在浏览器自动缩放/转 JPEG；不会把原始图片字节发给 Next.js。若浏览器无法解码（设备内存不足或格式损坏），换用普通 JPEG/PNG/WebP 图片 |
-| `429 active_job_limit` | 该用户已有未完成任务；检查 Worker 是否在线并正在处理队列 |
-| 任务长时间显示 `queued` | 确认本机 Worker 正在运行、`WORKER_TOKEN` 与云端一致、网络可达；确认该预设的当前版本 workflow 已启用且 ComfyUI 本机可用 |
+| `/api/uploads` 报 `503 storage_unavailable` | 七牛 5 个变量配齐了吗？看服务端日志（别打印密钥） |
+| 浏览器上传 CORS / Network Error | bucket CORS 的 origin、POST/OPTIONS、区域 endpoint 对上了吗 |
+| `/api/jobs` 报 `422 upload_not_found_in_storage` | 浏览器那次直传到底成功了吗？key/token 是不是被覆盖了 |
+| `/api/jobs` 报 `422 upload_object_mismatch` | 声明大小和七牛实际大小/MIME 对不上，换张正常图片重试 |
+| `429 active_job_limit` | 这个人已有未完成任务；看看 Worker 是不是在线 |
+| `409 preset_not_ready` | 这个预设还没配 workflow（演示风格），换个已启用的风格 |
+| 任务一直 `queued` | Worker 没跑 / `WORKER_TOKEN` 两边不一致 / 预设 workflow 没配好 |
 
-## 当前不支持
+## 还没做的事
 
-对象生命周期清理、上传过期记录/孤儿文件定期清理及后台 Worker 在线健康监控仍待实现。测试时避免上传隐私或不必要的大文件，正式开放前需要落实定期清理和保留期限。
+对象生命周期与孤儿文件定期清理、后台 Worker 在线状态展示还没实现。测试时别传隐私或超大文件；正式开放前要定好输入/输出图的保留期限并在 UI 告诉用户。

@@ -1,35 +1,58 @@
 # Runbook：ComfyUI 本地 Worker
 
-本仓库包含独立的常驻 Node.js Worker（`npm run start:worker`）及云端 `/api/worker/*` 路由。Worker 在 ComfyUI 同一台机器主动轮询云端队列、向本机 ComfyUI 提交 API workflow，并使用云端签发的短时链接读写七牛私有空间。ComfyUI 不应开放公网端口。
+> 目标：让排队的任务真正出图。Worker 是个独立小脚本（`npm run start:worker`），跑在 **ComfyUI 那台机器**上：它去网站领任务、喂给 ComfyUI、把结果传回七牛。
 
-## 前置条件
+## 流程总览（先看这张图）
 
-- 已应用最新数据库 migrations、部署包含 `/api/worker/*` 的应用版本，`GET /api/health` 正常。
-- 已配置七牛 Kodo 私有空间和应用端 Qiniu AK/SK；Worker 本身不需要知道七牛 AK/SK。
-- 已在本机安装并启动 ComfyUI，实际 API 地址例如 `http://127.0.0.1:8188`。
-- 管理员已在 `/admin` 的「预设目录」为要执行的风格填写 ComfyUI **API 格式** workflow、提示词、节点映射及附加 JSON，并保存为新版本。旧任务仍引用创建任务时的历史版本。
+```mermaid
+sequenceDiagram
+    participant K as Worker
+    participant W as 网站
+    participant Q as 七牛
+    participant C as ComfyUI
+    K->>W: ① 领任务(拿90秒租约)
+    K->>W: ② 取该任务版本的<br/>workflow+提示词+节点映射
+    K->>Q: ③ 下载原图(短时链接)
+    K->>C: ④ 上传原图到input区
+    K->>W: ⑤ 写prompt_submitting<br/>(先记账,此时还没有ID!)
+    K->>C: ⑥ POST /prompt(workflow)
+    C-->>K: ⑦ 返回真实prompt_id
+    K->>W: ⑧ 存真实ID+generating
+    K->>C: ⑨ 轮询/history等完成
+    K->>Q: ⑩ 取图并上传结果
+    K->>W: ⑪ 回报完成(核验后置成功)
+```
 
-## 配置密钥与环境
+**最关键的一行**：ComfyUI 的 `prompt_id` 是它生成的，不是我们指定的。所以顺序必须是“**先记账（⑤）→ 再提交（⑥）→ 拿到 ID 马上存（⑧）**”。如果 ⑥ 和 ⑧ 之间断了，任务会标 `execution_uncertain`，**绝不自动重发**（重发可能让用户花双倍时间/排两次队）。
 
-生成一个高熵 Worker bearer secret（例如 `openssl rand -hex 32`），将**同一个值**设置为：
+## 1. 前置条件
 
-1. 云端/Vercel 服务端环境变量 `WORKER_TOKEN`；
-2. ComfyUI 主机运行 Worker 时的环境变量 `WORKER_TOKEN`。
+- 网站已部署（含 `/api/worker/*`），`GET /api/health` 正常，migration 最新。
+- 七牛配好（Worker 不需要 AK/SK，它只用网站发的短时链接）。
+- ComfyUI 在跑，比如本机 `http://127.0.0.1:8188`，或 Tailscale 地址。
+- 后台里要跑的风格已经配好 **API 格式** workflow 并启用（下一节）。
 
-另外在 Worker 进程环境配置：
+## 2. 配密钥（网站和 Worker 对暗号）
 
-| 变量 | 必需 | 示例 / 说明 |
+```bash
+openssl rand -hex 32
+```
+
+把同一个值放到两处：网站服务端 `WORKER_TOKEN`，Worker 进程 `WORKER_TOKEN`。对不上会 401，Worker 直接退出。
+
+| 变量 | 必需 | 说明 |
 | --- | --- | --- |
-| `WEB_API_BASE_URL` | 是 | 已部署应用的 HTTPS 根地址，不带 `/api` 后缀 |
-| `WORKER_TOKEN` | 是 | 与云端环境变量完全相同的 bearer secret |
-| `COMFY_BASE_URL` | 否 | 默认 `http://127.0.0.1:8188`；不要使用公网地址 |
+| `WEB_API_BASE_URL` | 是 | 网站根地址，不带 `/api`。本地就是 `http://127.0.0.1:3000` |
+| `WORKER_TOKEN` | 是 | 和网站完全相同的密钥 |
+| `COMFY_BASE_URL` | 否 | 默认 `http://127.0.0.1:8188`；远端就填内网/Tailscale 地址，**不要填公网** |
 | `WORKER_POLL_INTERVAL_MS` | 否 | 空队列轮询间隔，默认 4000ms |
 
-Worker 脚本从操作系统环境读取变量；以 systemd、容器 secret 或受限权限环境文件提供它们。不要把真实 secret 放入 Git、网页 `NEXT_PUBLIC_*` 变量或日志。轮换 `WORKER_TOKEN` 时同时更新云端和本机，并重启 Worker。
+<sub>用 systemd、容器 secret 或权限 600 的环境文件提供这些值；换密钥后两边一起换并重启 Worker。日志里只会有 job_id 和阶段，看不到密钥和图片，这是设计。</sub>
 
-## 配置和验证风格 workflow
+## 3. 配 Workflow（后台点点就行）
 
-ComfyUI 导出节点式 **API 格式 JSON** 后，在后台 Workflow 配置弹窗中粘贴 `workflow`。`nodeMapping` 必须引用该 JSON 中真实存在的节点与输入名。对 Qwen Image 2.1 示例 workflow，可按下面的 ID 配置（如重新导出后节点 ID 改变，需要同步更新）：
+1. 在 ComfyUI 里导出 **API 格式** JSON（节点 ID → `{class_type, inputs}` 的那种，不是带坐标的界面导出）。
+2. 后台「Workflow 配置」→ 新建：粘贴 JSON，再填节点映射。以 Qwen 图像编辑为例：
 
 ```json
 {
@@ -43,25 +66,57 @@ ComfyUI 导出节点式 **API 格式 JSON** 后，在后台 Workflow 配置弹�
 }
 ```
 
-其中 `470` 是输入 LoadImage，`459:474` 是 Qwen 文本编码节点，`459:458` 是 KSampler，`461` 是最终 SaveImageAdvanced 输出；不要将 PreviewImage（`480`）当作最终结果。`inputImage` 与 `outputNodeIds` 是必需的；`additional` 的每个映射键对应风格 additional JSON 中的一个固定参数。预设 prompt 和 negative prompt 非空时会覆盖 workflow 中相应字段；留空则保留 workflow 默认文本。提示词字符串支持 `{{mood}}` 和 `{{note}}` 替换；未提供参数时替换为空字符串。静态校验通过不保证本机模型、自定义节点与真实图像尺寸都兼容，须在 ComfyUI 本机验证后再启用生产使用。
+3. 后台「预设目录」→ 编辑预设：下拉选这个 Workflow，填正向/负向提示词，启用。
 
-## 启动 Worker
+记住三条铁律：
 
-在仓库 Worker 主机安装生产依赖并设置好上述环境变量，然后运行：
+- `inputImage` 和 `outputNodeIds` 必填；`PreviewImage` 之类的预览节点**不是**最终结果，别选它。
+- Workflow 里的正反提示词可以留空，留空就由预设提供；预设启用时正向提示词必填。
+- 保存预设会**锁定 Workflow 当前版本**；以后改 Workflow 会涨版本号，老任务不受影响。
+
+<details>
+<summary>节点 ID 变了怎么办（点开）</summary>
+
+重新导出后 ID 可能变化（如 `459:474` 变成别的）。这时去改 Workflow 配置（版本会自动 +1），再到预设里重新选一次、保存，产生预设新版本。正在排队的老任务继续用老版本跑，不受影响。
+
+</details>
+
+## 4. 启动与验证
 
 ```bash
 npm run start:worker
 ```
 
-使用 systemd 等进程管理器配置开机启动、异常重启、资源限制与日志轮转。日志仅记录 job ID、执行阶段和错误码；不要记录签名下载 URL、token、workflow 内容、prompt、用户备注或图像字节。Worker 收到 `SIGINT`/`SIGTERM` 后停止领取，并中止当前 HTTP 操作。
+验证清单：
 
-## 端到端验证与故障恢复
+1. `curl --fail http://127.0.0.1:8188/system_stats`（或你的远端地址）在 ComfyUI 那台机器上正常；**从公网打不开 ComfyUI 端口**才对。
+2. 没任务时 Worker 安静轮询；来任务后日志出现 `claimed → complete`。
+3. 用户页任务 `queued → running → succeeded`，“我的作品”出现结果图。
+4. 后台用户管理的任务详情里能看到原图和结果图。
 
-1. 在 ComfyUI 主机确认 `curl --fail http://127.0.0.1:8188/system_stats` 正常；从公网不能访问 ComfyUI 端口。
-2. 启动 Worker，观察无任务时以配置间隔轮询；确认错误日志中没有 bearer 或签名链接。
-3. 用户选取已经设置可执行 workflow 的预设并创建任务；后台状态应先变为 `running`，随后成功时成为 `succeeded`，并通过用户/后台任务详情查看七牛结果。
-4. 若 Worker 在提交 ComfyUI 请求前崩溃，过期租约可被再次领取；若云端已记录实际 `prompt_id`，新 Worker 先检查 `/history/{prompt_id}` 和 `/queue` 后恢复处理，不重复提交。
-5. 若请求可能已到达 ComfyUI、但实际 ID 尚未持久化，队列任务会以 `execution_uncertain` 失败，而不是自动重放。先在 ComfyUI 队列/history 人工核实是否已执行，再由用户创建新任务；不要直接重置失败任务为 queued。
-6. 明确 ComfyUI 错误由 Worker 上报为失败；检查预设历史版本、节点映射、模型/节点插件、Worker 至 ComfyUI 连通性及七牛对象写入。
+## 5. 故障速查
 
-当前后台尚未上报 Worker 在线心跳/健康状态；请以 Worker 进程状态、ComfyUI 本机健康接口及任务状态为准。Worker 不能连接期间任务保留在队列中；停止 Worker 不会向公网开放或自动停止 ComfyUI。
+| 现象/错误码 | 含义和做法 |
+| --- | --- |
+| 任务一直 `queued` | Worker 没跑 / token 两边不一致 / 预设没绑启用的 Workflow |
+| `preset_not_found_or_unavailable` | 预设版本没有 workflow（演示风格），换绑好的预设 |
+| `comfy_http_4xx/5xx`、`generation_failed` | ComfyUI 拒了：查节点映射、模型/插件装没装、显存够不够 |
+| `generation_timeout` | 20 分钟没出图：ComfyUI 卡住或队列太长，去 ComfyUI 那边看 |
+| `execution_uncertain` | **可能已提交但 ID 没记下**：先查 ComfyUI `/queue` 和 `/history/{id}` 核实，确认没跑再让用户新建任务；**不要直接重试** |
+| `attempt_timeout` / `worker_attempt_limit` | 任务超时或重试超 3 次：看 Worker 日志定位哪一步慢 |
+| `lease_invalid` | 租约丢了（别人接手了）：当前 Worker 会停手，这是保护机制 |
+
+<details>
+<summary>重启恢复是怎么保证不重复提交的（点开）</summary>
+
+- 提交前崩溃（还没真实 ID）：过期租约可被重新领取，从下载原图开始。
+- 已有真实 ID：新 Worker 先查 `/history/{id}`，没有再查 `/queue`，有就继续等结果；两边都没有才标 `execution_uncertain`。
+- 输出已传但完成上报丢了：输出 key 是 `outputs/{jobId}/{index}` 固定的，重传会覆盖同一个对象，完成接口幂等。
+
+</details>
+
+## 6. 本地联调备忘（Tailscale 远端 ComfyUI）
+
+- `COMFY_BASE_URL=http://100.78.52.73:8188` 这类内网地址直接配就行，Worker 不关心是本机还是远端。
+- 先 `curl` 一下远端的 `/system_stats` 和 `/queue` 确认通，再启动 Worker。
+- 本地网站用 `http://127.0.0.1:3000`，Worker 配 `WEB_API_BASE_URL` 指向它。
