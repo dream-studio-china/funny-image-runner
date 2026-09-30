@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "咔嚓造梦局 · 把日常变成奇想",
   description: "上传照片，挑选一个灵感配方，开启你的图像变身之旅。",
+  referrer: "no-referrer",
 };
 
 export const viewport: Viewport = {

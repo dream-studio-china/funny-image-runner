@@ -76,5 +76,9 @@ if (!response.ok) {
   throw new Error(`Import failed (${response.status}): ${result.error ?? "request_failed"}; no invite codes were printed`);
 }
 
-console.log(`Imported ${items.length} invitation(s) into batch ${batchId}. Deliver these codes securely:`);
-for (const item of issuedCodes) console.log(`${item.userId}\t${item.ordinal}\t${item.code}`);
+console.log(`Imported ${items.length} invitation(s) into batch ${batchId}. Deliver these links securely:`);
+for (const item of issuedCodes) {
+  const inviteUrl = new URL("/", apiBaseUrl);
+  inviteUrl.hash = new URLSearchParams({ invite: item.code }).toString();
+  console.log(`${item.userId}\t${item.ordinal}\t${inviteUrl.toString()}`);
+}

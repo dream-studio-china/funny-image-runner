@@ -129,6 +129,31 @@ export default function Studio() {
   }, []);
 
   useEffect(() => {
+    const timeout = setTimeout(() => {
+      const currentUrl = new URL(window.location.href);
+      const queryCode = currentUrl.searchParams.get("invite");
+      const fragment = new URLSearchParams(currentUrl.hash.replace(/^#/, ""));
+      const fragmentCode = fragment.get("invite");
+      const code = queryCode ?? fragmentCode;
+      if (code === null) return;
+
+      currentUrl.searchParams.delete("invite");
+      fragment.delete("invite");
+      currentUrl.hash = fragment.size ? fragment.toString() : "";
+      window.history.replaceState(window.history.state, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+
+      const normalizedCode = code.trim();
+      if (normalizedCode.length < 12 || normalizedCode.length > 64) {
+        setInviteError("邀请链接中的邀请码格式不正确。");
+      } else {
+        setInviteCode(normalizedCode);
+      }
+      setShowAccess(true);
+    }, 0);
+    return () => clearTimeout(timeout);
+  }, []);
+
+  useEffect(() => {
     if (!toast) return;
     const timeout = setTimeout(() => setToast(""), 4000);
     return () => clearTimeout(timeout);
