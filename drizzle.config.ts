@@ -1,0 +1,25 @@
+import "dotenv/config";
+import { defineConfig } from "drizzle-kit";
+
+const rawUrl = process.env.DATABASE_URL ?? "mysql://user:password@127.0.0.1:3306/funny_image_runner";
+const url = new URL(rawUrl);
+const ca = process.env.MYSQL_SSL_CA_BASE64
+  ? Buffer.from(process.env.MYSQL_SSL_CA_BASE64, "base64").toString("utf8")
+  : undefined;
+const ssl = process.env.NODE_ENV === "production"
+  ? { rejectUnauthorized: true, ...(ca ? { ca } : {}) }
+  : undefined;
+
+export default defineConfig({
+  dialect: "mysql",
+  schema: "./src/lib/db/schema.ts",
+  out: "./drizzle",
+  dbCredentials: {
+    host: url.hostname,
+    port: Number(url.port || 3306),
+    user: decodeURIComponent(url.username),
+    password: decodeURIComponent(url.password),
+    database: decodeURIComponent(url.pathname.slice(1)),
+    ssl,
+  },
+});

@@ -11,7 +11,7 @@
       │                          │
       └── 直传/限时取图 ──> 七牛私有空间
                                  │
-                         托管 PostgreSQL (持久化)
+                         阿里云 RDS MySQL (持久化)
                                  ▲
                   HTTPS 主动轮询/回报 (worker 凭证)
                                  │
@@ -23,7 +23,7 @@
 管理员 ── Tailscale (受限远程运维) ──> 本地机器
 ```
 
-Next.js 同时承载页面与轻量 API。云端接口仅执行认证、校验、签名、数据库事务及状态查询，不承担图片字节转发或等待 GPU 完成。PostgreSQL 是用户、邀请码及任务的事实来源；七牛是图片字节的事实来源。worker 只向外发起连接；ComfyUI 不对公网开放，浏览器无法调用 worker 内部接口。
+Next.js 同时承载页面与轻量 API。云端接口仅执行认证、校验、签名、数据库事务及状态查询，不承担图片字节转发或等待 GPU 完成。阿里云 RDS MySQL 是用户、邀请码及任务的事实来源；七牛是图片字节的事实来源。worker 只向外发起连接；ComfyUI 不对公网开放，浏览器无法调用 worker 内部接口。
 
 若将来 worker 改部署到另一台机器，才需要通过 Tailscale grants 限制其到 ComfyUI 的主机/端口访问；当前同机配置使用回环地址。Tailscale 不代替用户登录或 worker API 凭证。
 
@@ -52,13 +52,13 @@ Next.js 同时承载页面与轻量 API。云端接口仅执行认证、校验�
 | 项目 | 首版决定 |
 | --- | --- |
 | Web | Next.js App Router、React、TypeScript、Tailwind CSS |
-| 持久化 | 托管 PostgreSQL；短事务领取任务，不依赖 Vercel 进程内队列 |
+| 持久化 | 阿里云 RDS MySQL；短事务领取任务，不依赖 Vercel 进程内队列 |
 | 图像存储 | 七牛私有空间；浏览器直传，worker 直下/直上 |
 | 本地执行 | 独立 TypeScript/Node.js 常驻进程，同机调用 ComfyUI 原生 HTTP API |
 | 实时性 | 浏览器短间隔轮询状态；worker 长轮询不作为首版前提 |
 | 并发 | 单 worker、推理并发 1；Web 层按用户限额，后续再扩容 |
 
-数据库驱动与托管实例、七牛 SDK、会话库在落地时可选，但不得改变本文的数据所有权和接口语义。限额、TTL 和文件大小均作为可配置值，首版建议值列在各详细设计中。
+数据库驱动采用 Drizzle ORM + mysql2，RDS 连接由 `DATABASE_URL` 配置；七牛 SDK 与会话实现不得改变本文的数据所有权和接口语义。限额、TTL 和文件大小均作为可配置值，首版建议值列在各详细设计中。
 
 ## 6. 验收链路
 

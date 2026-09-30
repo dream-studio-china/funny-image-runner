@@ -4,12 +4,12 @@
 
 ## 数据模型
 
-以下为逻辑字段，实际迁移应添加 FK、NOT NULL、时间戳和 CHECK 约束：
+以下为逻辑字段，MySQL 列类型和约束由 Drizzle schema 与 SQL migration 定义；状态和时区由应用层约束：
 
 | 表 | 关键字段 / 索引 |
 | --- | --- |
 | `uploads` | `id UUID PK`, `user_id FK`, `object_key UNIQUE`, `content_type`, `declared_size`, `expires_at`, `consumed_job_id UNIQUE NULL`, `created_at`；索引 `(user_id, created_at DESC)` |
-| `jobs` | `id UUID PK`, `user_id FK`, `upload_id FK UNIQUE`, `idempotency_key UUID`, `request_hash`, `preset_id`, `preset_version`, `parameters JSONB`, `status`, `phase`, `attempts`, `lease_token_hash`, `lease_until`, `prompt_id UUID UNIQUE NULL`, `error_code`, `created_at`, `updated_at`, `finished_at`；唯一索引 `(user_id, idempotency_key)`，另有 `(user_id, created_at DESC)` 和待领任务 `(status, lease_until, created_at)` |
+| `jobs` | `id CHAR(36) PK`, `user_id FK`, `upload_id FK UNIQUE`, `idempotency_key CHAR(36)`, `request_hash`, `preset_id`, `preset_version`, `parameters JSON`, `status`, `phase`, `attempts`, `lease_token_hash`, `lease_until`, `prompt_id CHAR(36) UNIQUE NULL`, `error_code`, `created_at`, `updated_at`, `finished_at`；唯一索引 `(user_id, idempotency_key)`，另有 `(user_id, created_at)` 和待领任务 `(status, lease_until, created_at)` |
 | `job_outputs` | `job_id FK`, `index INT`, `object_key UNIQUE`, `content_type`, `size`；主键 `(job_id, index)` |
 
 身份表定义见 [身份设计](./low-level-identity.md)。任务中的参数是快照，保留对应的 `preset_version`；变更预设不能默默改写排队中的任务。限制参数 JSON 体积和字段数量。云端只保存必要的对象 key，不把签名 URL、七牛凭证或工作流 JSON 写进数据库。
@@ -46,14 +46,14 @@ running.phase = claimed | input_ready | prompt_submitting |
 
 | 路由 | 输入 / 作用 |
 | --- | --- |
-| `POST /api/worker/jobs/claim` | 事务中以 `FOR UPDATE SKIP LOCKED` 选最旧 `queued` 或过期 `running` 任务，设置 `running`、新租约、`attempts + 1`；空队列返回 204 |
+| `POST /api/worker/jobs/claim` | MySQL 8.0+ 事务中以 `FOR UPDATE SKIP LOCKED` 选最旧 `queued` 或过期 `running` 任务，设置 `running`、新租约、`attempts + 1`；空队列返回 204。若 RDS 小版本/事务隔离级别不支持该锁语义，使用条件 UPDATE 原子抢占 |
 | `POST /api/worker/jobs/{id}/heartbeat` | `{leaseToken, phase?, promptId?}`；仅当前持有者可续租和推进 phase；第一次提交 `promptId` 时必须在调用 ComfyUI `/prompt` **之前**写入 `prompt_submitting`，以后不得修改 ID |
 | `POST /api/worker/jobs/{id}/input-url` | `{leaseToken}`；签发仅本任务输入的短期读链接 |
 | `POST /api/worker/jobs/{id}/output-upload` | `{leaseToken,index,contentType,size}`；签发限定任务结果 key 的上传凭证 |
 | `POST /api/worker/jobs/{id}/complete` | `{leaseToken,outputs:[{index,key,contentType,size}]}`；校验租约、对象 key 和七牛已存在对象，事务写入输出并置为 `succeeded` |
 | `POST /api/worker/jobs/{id}/fail` | `{leaseToken,errorCode}`；仅允许枚举的错误码，事务置为 `failed` |
 
-提交 `promptId` 的写入采用“只允许 NULL → 固定值”的条件更新。每次状态变更检查 `status=running`、租约摘要相同且尚未过期；领取和续租使用数据库时间。默认租约 90 秒、每 20 秒心跳、单次最长执行 20 分钟；心跳持续失败则 worker 停止后续提交/上报并进入恢复路径。`attempts` 建议上限 3，达到上限时由对账过程置为失败并记录管理员可见诊断。
+提交 `promptId` 的写入采用“只允许 NULL → 固定值”的条件更新。每次状态变更检查 `status=running`、租约摘要相同且尚未过期；领取和续租使用 UTC 数据库时间。JSON 参数使用 MySQL JSON 列；时间排序必须使用 `(created_at, id)` 稳定游标。默认租约 90 秒、每 20 秒心跳、单次最长执行 20 分钟；心跳持续失败则 worker 停止后续提交/上报并进入恢复路径。`attempts` 建议上限 3，达到上限时由对账过程置为失败并记录管理员可见诊断。
 
 ## 故障语义与验收
 

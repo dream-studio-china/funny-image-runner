@@ -6,8 +6,8 @@
 
 | 位置 | 组件 | 必须配置的秘密/连接 |
 | --- | --- | --- |
-| Vercel | Next.js 页面和 Route Handlers | PostgreSQL 连接、七牛 AK/SK 与空间/区域/域名、管理员 API 凭证、worker API 凭证、会话 Cookie 配置 |
-| 托管数据库 | PostgreSQL | 限制访问、自动备份与迁移权限；预览/生产隔离 |
+| Vercel | Next.js 页面和 Route Handlers | MySQL `DATABASE_URL`、七牛 AK/SK 与空间/区域/域名、管理员 API 凭证、worker API 凭证、会话 Cookie 配置 |
+| 阿里云 RDS | MySQL | 仅允许 Vercel/受信任运维来源访问；启用 TLS、自动备份与最小数据库权限；预览/生产隔离 |
 | 本地机器 | worker + ComfyUI + Tailscale | `WEB_API_BASE_URL`、worker API 凭证、ComfyUI 本地地址、工作流 JSON 与模型文件 |
 | 管理员可信设备 | 邀请码 CLI | 私有 `INVITE_SEED`、管理员 API 凭证；明文邀请码仅在交付时输出 |
 
@@ -16,7 +16,7 @@
 ## 启动与发布顺序
 
 1. 创建私有七牛空间、上传域名、下载域名及对象存储凭证；确认实际区域上传接口、签名链接和跨域规则允许部署域名直传。
-2. 创建 PostgreSQL 数据库，运行版本化迁移；部署 Next.js 至 Vercel，配置环境变量和公开域名；配置可用性检查。
+2. 创建阿里云 RDS MySQL 数据库、应用专用账号和 TLS 访问；运行版本化 migration；部署 Next.js 至 Vercel，配置环境变量和公开域名；配置可用性检查。
 3. 在同机安装并启动 ComfyUI，导出 API workflow，记录模型/自定义节点版本；配置 worker 的系统服务（系统启动自启、异常重启、受限账户和日志轮转）。
 4. 将首批预设公开定义随 Web 部署、私有工作流随 worker 部署，核对双方版本；启动 worker 并检查其到云端 HTTPS、七牛上传/下载以及 `127.0.0.1:8188` 的连通性；用测试邀请码完成端到端验证。
 

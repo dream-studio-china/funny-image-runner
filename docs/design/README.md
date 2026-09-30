@@ -17,6 +17,7 @@
 - 前端及云端接口：React + TypeScript + Tailwind CSS + Next.js App Router，部署在 Vercel；不单独使用 Vite。
 - 输入先上传七牛；用户选择预设并可填写该预设允许的额外信息。
 - ComfyUI 与常驻 worker 在同一台本地机器；Tailscale 用于对该机器的受限远程访问，不作为 Vercel 到 ComfyUI 的必经链路。
+- 持久化使用阿里云 RDS MySQL，应用层采用 Drizzle ORM + mysql2。
 - 邀请用户使用；管理员根据私有 seed 生成一次性邀请码，提前指定用户标识。
 - 目前只有 ComfyUI 界面工作流；真正接入前需要导出 API 格式 JSON 并确认节点映射。
 
