@@ -1,6 +1,6 @@
 # 咔嚓造梦局
 
-移动端优先的图像生成应用。当前包含可交互演示 UI、MySQL 数据层、一次性邀请码兑换与会话 API。图片上传/任务创建仍为展示模式；**演示效果是预制样图，不会根据上传照片生成图片**。ComfyUI worker 目前仅有设计预留，等待 API 格式工作流 JSON 和节点映射。
+移动端优先的图像生成应用。当前包含响应式演示 UI、MySQL 数据层、一次性邀请码兑换与自动签发 API、七牛浏览器直传和队列任务 API。匿名访客体验预制样图；登录用户可将图片上传至七牛并创建真实队列任务。ComfyUI worker 尚未连接，因此排队任务目前不会生成结果。
 
 ```bash
 npm install
@@ -12,7 +12,7 @@ npm run dev
 ## 阿里云 RDS MySQL
 
 1. 创建 MySQL 数据库和仅供应用使用的账号，设置可访问来源并启用 TLS。不要将 RDS 密码提交到仓库。
-2. 将 `.env.example` 复制到 `.env.local`，设置 `DATABASE_URL`、`ADMIN_API_TOKEN`、`INVITATION_ENCRYPTION_KEY` 和 `APP_BASE_URL`；若 RDS 使用自定义 CA，设置 base64 编码的 `MYSQL_SSL_CA_BASE64`。TLS 在 production 强制校验服务端证书。`INVITATION_ENCRYPTION_KEY` 用 `openssl rand -base64 32` 生成并备份；同一环境不可随意更换，否则自动发货重试无法还原已签发链接。
+2. 将 `.env.example` 复制到 `.env.local`，设置 MySQL、邀请码服务端变量及七牛 Kodo 的 `QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET`、`QINIU_UPLOAD_URL`、`QINIU_PRIVATE_DOMAIN`；AK/SK 仅配置在服务端。详细操作见 [七牛上传与任务 API runbook](docs/runbooks/qiniu-storage-and-jobs.md)。若 RDS 使用自定义 CA，设置 base64 编码的 `MYSQL_SSL_CA_BASE64`。TLS 在 production 强制校验服务端证书。`INVITATION_ENCRYPTION_KEY` 用 `openssl rand -base64 32` 生成并备份；同一环境不可随意更换，否则自动发货重试无法还原已签发链接。
 3. 应用 SQL schema：`npm run db:migrate`。这个命令只应在配置了可访问的 `DATABASE_URL` 后运行。
 4. 用管理员 seed 创建并导入邀请码（seed 只放在可信的管理员终端，不放入 `.env.local`、Vercel 或 Git）：
 
@@ -38,6 +38,8 @@ Content-Type: application/json
 ```
 
 接口成功返回的 `inviteUrl` 可直接发给买家；详细的 request/response、幂等规则和安全注意事项见 [签发邀请码 runbook](docs/runbooks/issue-invitation-links.md)。当前还提供 `POST /api/auth/redeem`、`GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/admin/invitations/import` 及 `GET /api/health`。本地没有数据库时页面仍可预览，服务端接口返回 unavailable；可使用 `npm run db:generate` 从 schema 生成后续 migration。
+
+登录用户可在页面上传照片并创建 `queued` 任务；worker 接入前任务会保留在队列，不会伪造生成结果。图片由浏览器直传七牛，详见 [七牛上传与任务 API runbook](docs/runbooks/qiniu-storage-and-jobs.md)。
 
 总体方案与详细接口见 [`docs/design/`](docs/design/README.md)。
 管理员数据库初始化与邀请码操作见 [`docs/runbooks/`](docs/runbooks/README.md)。

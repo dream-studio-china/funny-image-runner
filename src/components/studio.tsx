@@ -29,6 +29,15 @@ type DemoJob = {
 };
 
 type Stage = "idle" | "queued" | "creating" | "done";
+type LiveJob = {
+  id: string;
+  presetId: string;
+  mood: string;
+  status: "uploading" | "queued" | "running" | "succeeded" | "failed";
+  errorCode?: string;
+};
+type LiveResult = { index: number; contentType: string; url: string };
+type SavedJob = { id: string; presetId: string; status: LiveJob["status"]; createdAt: string; errorCode?: string | null };
 
 const HISTORY_KEY = "dream-studio-demo-history-v1";
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -36,6 +45,16 @@ const MAX_SIZE = 20 * 1024 * 1024;
 
 function scrollToSection(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function jobStatusLabel(status: LiveJob["status"]): string {
+  switch (status) {
+    case "uploading": return "上传中";
+    case "queued": return "等待生成服务";
+    case "running": return "生成中";
+    case "succeeded": return "已完成";
+    case "failed": return "失败";
+  }
 }
 
 function SectionKicker({ number, children }: { number: string; children: React.ReactNode }) {
@@ -79,6 +98,9 @@ export default function Studio() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
+  const [liveJob, setLiveJob] = useState<LiveJob | null>(null);
+  const [liveResults, setLiveResults] = useState<LiveResult[]>([]);
+  const [savedJobs, setSavedJobs] = useState<SavedJob[]>([]);
   const [history, setHistory] = useState<DemoJob[]>([]);
   const [activeJob, setActiveJob] = useState<DemoJob | null>(null);
   const [toast, setToast] = useState("");
@@ -95,6 +117,8 @@ export default function Studio() {
   const timeoutRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
   const previewRef = useRef<string | null>(null);
   const selected = presets.find((preset) => preset.id === selectedId) ?? presets[0];
+  const liveJobId = liveJob?.id;
+  const liveJobStatus = liveJob?.status;
 
   useEffect(() => {
     const loadHistory = setTimeout(() => {
@@ -129,6 +153,21 @@ export default function Studio() {
   }, []);
 
   useEffect(() => {
+    if (!authenticatedUser) return;
+    const refreshJobs = async () => {
+      try {
+        const response = await fetch("/api/jobs?limit=20", { cache: "no-store" });
+        if (!response.ok) return;
+        const result = await response.json() as { jobs?: SavedJob[] };
+        setSavedJobs(result.jobs ?? []);
+      } catch { /* keep the last known job list if offline */ }
+    };
+    void refreshJobs();
+    const interval = setInterval(() => { void refreshJobs(); }, 8000);
+    return () => clearInterval(interval);
+  }, [authenticatedUser]);
+
+  useEffect(() => {
     const timeout = setTimeout(() => {
       const currentUrl = new URL(window.location.href);
       const queryCode = currentUrl.searchParams.get("invite");
@@ -158,6 +197,33 @@ export default function Studio() {
     const timeout = setTimeout(() => setToast(""), 4000);
     return () => clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!liveJobId || (liveJobStatus !== "queued" && liveJobStatus !== "running")) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const jobId = liveJobId;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+        const data = await response.json() as { job?: { status: LiveJob["status"]; errorCode?: string | null } };
+        if (!response.ok || !data.job || cancelled) throw new Error("job_status_unavailable");
+        const status = data.job.status;
+        setLiveJob((current) => current?.id === jobId ? { ...current, status, errorCode: data.job?.errorCode ?? undefined } : current);
+        if (status === "succeeded") {
+          const resultResponse = await fetch(`/api/jobs/${jobId}/result`, { cache: "no-store" });
+          const resultData = await resultResponse.json() as { results?: LiveResult[] };
+          if (resultResponse.ok && !cancelled) setLiveResults(resultData.results ?? []);
+          return;
+        }
+        if (status === "queued" || status === "running") timer = setTimeout(poll, 4000);
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 6000);
+      }
+    };
+    timer = setTimeout(poll, 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [liveJobId, liveJobStatus]);
 
   useEffect(() => {
     if (!showAccess) return;
@@ -210,12 +276,18 @@ export default function Studio() {
     setShowDetails(true);
   }
 
-  function startDemo() {
+  async function startDemo() {
     if (!file) {
       setToast("先放一张照片进来，灵感才有地方着陆 ✦");
       scrollToSection("upload");
       return;
     }
+    if (authenticatedUser) {
+      await startLiveJob();
+      return;
+    }
+    setLiveJob(null);
+    setLiveResults([]);
     if (stage === "queued" || stage === "creating") return;
     timeoutRefs.current.forEach(clearTimeout);
     const job: DemoJob = {
@@ -241,15 +313,74 @@ export default function Studio() {
     ];
   }
 
+  async function startLiveJob() {
+    if (!file || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running") return;
+    setActiveJob(null);
+    setLiveResults([]);
+    setLiveJob({ id: "uploading", presetId: selected.id, mood, status: "uploading" });
+    scrollToSection("demo-status");
+    try {
+      const uploadResponse = await fetch("/api/uploads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ contentType: file.type, size: file.size }),
+      });
+      const upload = await uploadResponse.json() as { uploadId?: string; key?: string; uploadUrl?: string; uploadToken?: string; error?: string };
+      if (!uploadResponse.ok || !upload.uploadId || !upload.key || !upload.uploadUrl || !upload.uploadToken) {
+        throw new Error(upload.error ?? "upload_credential_failed");
+      }
+
+      const form = new FormData();
+      form.append("token", upload.uploadToken);
+      form.append("key", upload.key);
+      form.append("file", file, file.name);
+      const storageResponse = await fetch(upload.uploadUrl, { method: "POST", body: form });
+      if (!storageResponse.ok) throw new Error("qiniu_upload_failed");
+
+      const taskResponse = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          uploadId: upload.uploadId,
+          presetId: selected.id,
+          parameters: { mood, ...(note.trim() ? { note: note.trim() } : {}) },
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      });
+      const task = await taskResponse.json() as { id?: string; status?: LiveJob["status"]; error?: string };
+      if (!taskResponse.ok || !task.id) throw new Error(task.error ?? "job_creation_failed");
+      setLiveJob({ id: task.id, presetId: selected.id, mood, status: task.status === "running" ? "running" : "queued" });
+      setToast("照片已安全上传，任务已进入生成队列");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "request_failed";
+      setLiveJob({ id: "upload-failed", presetId: selected.id, mood, status: "failed", errorCode: reason });
+    }
+  }
+
   function openJob(job: DemoJob) {
     setActiveJob(job);
     setStage("done");
     scrollToSection("demo-status");
   }
 
+  async function openSavedJob(job: SavedJob) {
+    setActiveJob(null);
+    setStage("idle");
+    setLiveResults([]);
+    setLiveJob({ id: job.id, presetId: job.presetId, mood: "", status: job.status, errorCode: job.errorCode ?? undefined });
+    if (job.status === "succeeded") {
+      const response = await fetch(`/api/jobs/${job.id}/result`, { cache: "no-store" });
+      const result = await response.json() as { results?: LiveResult[] };
+      if (response.ok) setLiveResults(result.results ?? []);
+    }
+    scrollToSection("demo-status");
+  }
+
   function resetDemo() {
     timeoutRefs.current.forEach(clearTimeout);
     setActiveJob(null);
+    setLiveJob(null);
+    setLiveResults([]);
     setStage("idle");
     setNote("");
     setMood(selected.moods[0]);
@@ -288,14 +419,15 @@ export default function Studio() {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
       setAuthenticatedUser(null);
+      setSavedJobs([]);
       setToast("已安全退出");
     } catch {
       setToast("退出请求未完成，请检查网络");
     }
   }
 
-  const isRunning = stage === "queued" || stage === "creating";
-  const resultPreset = presets.find((preset) => preset.id === activeJob?.presetId) ?? selected;
+  const isRunning = stage === "queued" || stage === "creating" || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running";
+  const resultPreset = presets.find((preset) => preset.id === (liveJob?.presetId ?? activeJob?.presetId)) ?? selected;
 
   return (
     <div className="site-shell">
@@ -380,18 +512,33 @@ export default function Studio() {
                 <button type="button" className="details-mobile-toggle" onClick={() => setShowDetails(!showDetails)} aria-expanded={showDetails}>个性化设置 <ChevronDown size={18} className={showDetails ? "rotate-180" : ""} /></button>
                 {showDetails && <div className="details-content"><div className="field-group"><label className="field-label">想要什么样的感觉？ <span>选择一种心情</span></label><div className="mood-options">{selected.moods.map((option) => <button key={option} type="button" className={mood === option ? "is-active" : ""} onClick={() => setMood(option)} aria-pressed={mood === option}>{option === "梦幻" || option === "俏皮" || option === "元气" || option === "诗意" ? "✦ " : "✳ "}{option}</button>)}</div></div><div className="field-group"><label htmlFor="extra-note" className="field-label">{selected.promptLabel} <span>选填</span></label><div className="textarea-wrap"><textarea id="extra-note" maxLength={120} placeholder={selected.promptPlaceholder} value={note} onChange={(event) => setNote(event.target.value)} rows={3} /><span>{note.length} / 120</span></div></div></div>}
               </div>
-              <div className="create-row"><div className="create-hint"><span>✦</span> 一个新世界，马上打开。<small>当前是界面演示，不会实际上传或生成</small></div><button type="button" className="primary-button create-button" onClick={startDemo} disabled={isRunning}>{isRunning ? "演示进行中…" : "开启奇妙变身"}<WandSparkles size={19} /></button></div>
+              <div className="create-row"><div className="create-hint"><span>✦</span> 一个新世界，马上打开。<small>{authenticatedUser ? "原图将直传七牛；任务等待本地生成服务处理" : "当前为演示模式，不会实际上传或生成"}</small></div><button type="button" className="primary-button create-button" onClick={startDemo} disabled={isRunning}>{liveJob?.status === "uploading" ? "正在上传照片…" : isRunning ? "任务处理中…" : authenticatedUser ? "上传并创建任务" : "开启奇妙变身"}<WandSparkles size={19} /></button></div>
             </div>
 
-            {stage !== "idle" && activeJob && <div className="status-section" id="demo-status" aria-live="polite">
-              {stage !== "done" ? <div className="progress-card"><div className="progress-orb"><Sparkles size={34} /></div><div className="progress-content"><span className="progress-kicker">A LITTLE MAGIC IS HAPPENING</span><h3>{stage === "queued" ? "灵感已收到，准备出发…" : "正在把想象力装进画面…"}</h3><p>正在演示「{resultPreset.name}」的创作流程，请稍等片刻。</p><div className="progress-track"><span className={stage === "creating" ? "is-creating" : ""} /></div><span className="progress-disclaimer">演示进度 · 未连接图像生成服务</span></div></div> : <div className="result-card"><div className="result-art"><Image src={resultPreset.image} alt={`${resultPreset.name}预制风格样图`} fill sizes="(max-width: 768px) 90vw, 340px" className="object-cover" /><span className="result-sample-badge">风格示例样图</span></div><div className="result-copy"><span className="progress-kicker">A LITTLE PREVIEW FOR YOU ✦</span><h3>灵感的样子，<br /><em>先睹为快。</em></h3><p>这是「{resultPreset.name}」的预制风格示例，<strong>不是根据你上传的照片生成</strong>。真实生成功能将在服务端接入后开放。</p><div className="result-stats"><span>风格 <b>{resultPreset.name}</b></span><span>氛围 <b>{activeJob.mood}</b></span></div><div className="result-actions"><a href={resultPreset.image} download={`${resultPreset.id}-sample.svg`} className="secondary-button"><Download size={17} /> 保存示例样图</a><button type="button" className="text-button" onClick={resetDemo}>再玩一次 <ArrowRight size={17} /></button></div></div></div>}
+            {(liveJob || (stage !== "idle" && activeJob)) && <div className="status-section" id="demo-status" aria-live="polite">
+              {liveJob ? liveJob.status === "succeeded" ? <div className="result-card"><div className="result-art">{liveResults[0] && <Image src={liveResults[0].url} alt={`${resultPreset.name}生成结果`} fill unoptimized sizes="(max-width: 768px) 90vw, 340px" className="object-cover" />}<span className="result-sample-badge">真实生成结果</span></div><div className="result-copy"><span className="progress-kicker">YOUR CREATION IS READY ✦</span><h3>你的作品，<br /><em>完成了。</em></h3><p>「{resultPreset.name}」已完成。生成结果链接为限时访问。</p><div className="result-actions">{liveResults.map((result) => <a key={result.index} href={result.url} target="_blank" rel="noreferrer" className="secondary-button"><Download size={17} /> 查看结果 {liveResults.length > 1 ? result.index + 1 : ""}</a>)}<button type="button" className="text-button" onClick={resetDemo}>再创作一次 <ArrowRight size={17} /></button></div></div></div> : liveJob.status === "failed" ? <div className="progress-card"><div className="progress-orb"><X size={32} /></div><div className="progress-content"><span className="progress-kicker">WE COULDN&apos;T START THIS ONE</span><h3>这次没有成功进入队列</h3><p>请稍后重试；如果七牛已收到照片，未使用的上传记录会过期清理。错误代码：{liveJob.errorCode ?? "unknown_error"}</p><button type="button" className="text-button" onClick={resetDemo}>重新开始 <ArrowRight size={17} /></button></div></div> : <div className="progress-card"><div className="progress-orb"><Sparkles size={34} /></div><div className="progress-content"><span className="progress-kicker">{liveJob.status === "uploading" ? "UPLOADING YOUR PHOTO" : "YOUR JOB IS IN THE QUEUE"}</span><h3>{liveJob.status === "uploading" ? "正在安全上传照片…" : liveJob.status === "running" ? "本地生成服务正在处理…" : "任务已排队，等待本地生成服务…"}</h3><p>{liveJob.status === "uploading" ? "照片会由浏览器直接上传至七牛，不经过应用服务器。" : "任务已保存；ComfyUI worker 接入并在线后会开始生成。当前还没有连接本地 worker。"}</p><div className="progress-track"><span className={liveJob.status === "running" ? "is-creating" : ""} /></div><span className="progress-disclaimer">任务编号 · {liveJob.id}</span></div></div> : stage !== "done" ? <div className="progress-card"><div className="progress-orb"><Sparkles size={34} /></div><div className="progress-content"><span className="progress-kicker">A LITTLE MAGIC IS HAPPENING</span><h3>{stage === "queued" ? "灵感已收到，准备出发…" : "正在把想象力装进画面…"}</h3><p>正在演示「{resultPreset.name}」的创作流程，请稍等片刻。</p><div className="progress-track"><span className={stage === "creating" ? "is-creating" : ""} /></div><span className="progress-disclaimer">演示进度 · 未连接图像生成服务</span></div></div> : <div className="result-card"><div className="result-art"><Image src={resultPreset.image} alt={`${resultPreset.name}预制风格样图`} fill sizes="(max-width: 768px) 90vw, 340px" className="object-cover" /><span className="result-sample-badge">风格示例样图</span></div><div className="result-copy"><span className="progress-kicker">A LITTLE PREVIEW FOR YOU ✦</span><h3>灵感的样子，<br /><em>先睹为快。</em></h3><p>这是「{resultPreset.name}」的预制风格示例，<strong>不是根据你上传的照片生成</strong>。真实生成功能将在服务端接入后开放。</p><div className="result-stats"><span>风格 <b>{resultPreset.name}</b></span><span>氛围 <b>{activeJob!.mood}</b></span></div><div className="result-actions"><a href={resultPreset.image} download={`${resultPreset.id}-sample.svg`} className="secondary-button"><Download size={17} /> 保存示例样图</a><button type="button" className="text-button" onClick={resetDemo}>再玩一次 <ArrowRight size={17} /></button></div></div></div>}
             </div>}
           </div>
         </section>
 
         <section className="inspiration-section" id="inspiration" aria-labelledby="inspiration-title"><div className="container"><div className="section-heading"><div><SectionKicker number="A LITTLE INSPIRATION">FOR THE CURIOUS ONES</SectionKicker><h2 id="inspiration-title">好玩的世界，<em>不止一种。</em></h2><p>先看看这些风格的样子，再挑你想走进去的那一个。</p></div><span className="inspiration-sun" aria-hidden="true">☼</span></div><div className="inspiration-grid">{presets.map((preset, index) => <button type="button" className="inspiration-item group" key={preset.id} onClick={() => { selectPreset(preset); scrollToSection("choose-preset"); }}><div className="inspiration-image"><Image src={preset.image} alt={`${preset.name}预制风格示例`} fill sizes="(max-width: 640px) 70vw, 280px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>0{index + 1}</span></div><div className="inspiration-caption"><span><strong>{preset.name}</strong><small>{preset.subtitle}</small></span><span className="inspiration-arrow"><ArrowRight size={18} /></span></div></button>)}</div><p className="gallery-disclaimer">以上均为预制风格示例插画，不代表实际生成结果。</p></div></section>
 
-        <section className="works-section container" id="my-works" aria-labelledby="works-title"><div className="section-heading"><div><SectionKicker number="YOUR LITTLE COLLECTION">MADE WITH IMAGINATION</SectionKicker><h2 id="works-title">我的<em>灵感小册。</em></h2><p>每一次尝试，都值得留个纪念。</p></div><span className="works-count">{history.length.toString().padStart(2, "0")} 个演示记录</span></div>{history.length ? <><div className="works-grid">{history.map((job) => { const preset = presets.find((item) => item.id === job.presetId) ?? presets[0]; return <button type="button" className="work-card group" key={job.id} onClick={() => openJob(job)}><div className="work-art"><Image src={preset.image} alt={`${preset.name}示例样图`} fill sizes="(max-width: 640px) 45vw, 240px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>演示样图</span></div><div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })} <ArrowRight size={15} /></span></div></button>; })}</div><button type="button" className="clear-history" onClick={() => { setHistory([]); try { localStorage.removeItem(HISTORY_KEY); } catch { /* browser storage may be disabled */ } setToast("演示记录已清空"); }}>清空演示记录</button></> : <div className="empty-works"><div className="empty-works-icon"><Images size={35} strokeWidth={1.4} /><span>✦</span></div><h3>这里还是一张白纸</h3><p>创造你的第一个演示作品，<br />让这本灵感小册热闹起来。</p><button type="button" className="secondary-button" onClick={() => scrollToSection("studio")}>去试试看 <ArrowRight size={17} /></button></div>}</section>
+        <section className="works-section container" id="my-works" aria-labelledby="works-title">
+          <div className="section-heading"><div><SectionKicker number="YOUR LITTLE COLLECTION">MADE WITH IMAGINATION</SectionKicker><h2 id="works-title">我的<em>灵感小册。</em></h2><p>每一次尝试，都值得留个纪念。</p></div><span className="works-count">{(history.length + savedJobs.length).toString().padStart(2, "0")} 个记录</span></div>
+          {history.length || savedJobs.length ? <>
+            <div className="works-grid">
+              {savedJobs.map((job) => {
+                const preset = presets.find((item) => item.id === job.presetId) ?? presets[0];
+                return <button type="button" className="work-card group" key={job.id} onClick={() => { void openSavedJob(job); }} aria-label={`查看${preset.name}任务，${jobStatusLabel(job.status)}`}>
+                  <div className="task-art" style={{ backgroundColor: preset.tint }}><Sparkles size={38} style={{ color: preset.accent }} /><span>{jobStatusLabel(job.status)}</span></div>
+                  <div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div>
+                </button>;
+              })}
+              {history.map((job) => { const preset = presets.find((item) => item.id === job.presetId) ?? presets[0]; return <button type="button" className="work-card group" key={job.id} onClick={() => openJob(job)}><div className="work-art"><Image src={preset.image} alt={`${preset.name}示例样图`} fill sizes="(max-width: 640px) 45vw, 240px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>演示样图</span></div><div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div></button>; })}
+            </div>
+            {history.length > 0 && <button type="button" className="clear-history" onClick={() => { setHistory([]); try { localStorage.removeItem(HISTORY_KEY); } catch { /* browser storage may be disabled */ } setToast("演示记录已清空"); }}>清空演示记录</button>}
+          </> : <div className="empty-works"><div className="empty-works-icon"><Images size={35} strokeWidth={1.4} /><span>✦</span></div><h3>这里还是一张白纸</h3><p>创造你的第一个作品，<br />让这本灵感小册热闹起来。</p><button type="button" className="secondary-button" onClick={() => scrollToSection("studio")}>去试试看 <ArrowRight size={17} /></button></div>}
+        </section>
       </main>
 
       <footer className="site-footer"><div className="container footer-inner"><div><div className="footer-logo">✳ 咔嚓造梦局</div><p>让每一张平凡的照片，都有做梦的权利。</p></div><div className="footer-right"><span>MADE FOR THE DAYDREAMERS ✦</span><small>当前为交互演示 · 图像生成服务尚未接入</small></div></div></footer>

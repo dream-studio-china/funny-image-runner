@@ -34,7 +34,7 @@ running.phase = claimed | input_ready | prompt_submitting |
 | `GET /api/presets` | 返回可用预设的公开字段与版本 |
 | `POST /api/uploads` | 签发直传凭证并建立上传占位，细节见存储设计 |
 | `POST /api/jobs` | `{uploadId, presetId, parameters, idempotencyKey}`；鉴权、校验预设/用户限额/七牛对象，原子消费上传并创建任务；返回 201 `{id,status}`，同一用户同一键的原请求重复提交返回原任务，参数冲突返回 409 |
-| `GET /api/jobs?cursor=...` | 仅列当前用户任务，按创建时间倒序分页，不返回内部租约或七牛对象 key |
+| `GET /api/jobs?limit=20` | 仅列当前用户最近任务，`limit` 最大 50；不返回内部租约或七牛对象 key |
 | `GET /api/jobs/{id}` | 仅当前用户；返回 `{id,presetId,status,createdAt,finishedAt,errorCode?}`，失败只暴露安全的错误码 |
 | `GET /api/jobs/{id}/result` | 仅成功且属于本人时返回短期结果签名 URL（多图则为数组） |
 

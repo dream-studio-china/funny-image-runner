@@ -44,6 +44,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function isSameOriginRequest(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin && origin !== new URL(request.url).origin) return false;
+  return request.headers.get("sec-fetch-site") !== "cross-site";
+}
+
 export function validateUserId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{3,64}$/.test(value);
 }

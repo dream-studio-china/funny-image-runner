@@ -73,5 +73,5 @@ curl --fail --silent --show-error http://localhost:3000/api/health
 - 已实现邀请码导入、兑换、当前会话查询和退出。
 - 已实现 `POST /api/admin/invitations/issue` 自动签发 API；调用前必须在服务端配置 `ADMIN_API_TOKEN`、`INVITATION_ENCRYPTION_KEY` 和 `APP_BASE_URL`；`INVITATION_TTL_DAYS` 可选，详见 [签发邀请码 runbook](./issue-invitation-links.md)。
 - 页面允许在没有数据库时浏览演示；这不代表认证或真实生成已经可用。
-- 图片上传、七牛访问、任务 API、用户权限下的真实生成，以及 ComfyUI worker 尚未实现。
+- ComfyUI worker 尚未实现；登录用户可直传七牛并创建 `queued` 任务，但暂无服务实际执行生成。
 - 当前没有管理员网页、邀请撤销界面或用户管理界面。遇到已泄露的邀请码，按 [邀请码 runbook](./issue-invitation-links.md#紧急处理邀请码泄露) 处理。

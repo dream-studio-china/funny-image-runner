@@ -14,7 +14,9 @@
 2. 浏览器按七牛当前区域的上传域名和协议直传字节。上传完成只得到客户端可见的返回信息，不能视为服务端已确认。
 3. `POST /api/jobs` 接收 `uploadId`（不直接接收任意 key）；服务端查询归属、向七牛核验对象确实存在、大小/类型符合约束，将上传记录原子标记为已消费并创建任务。一个输入对象只创建一个任务；HTTP 重试通过任务幂等键返回原任务，参见 [任务 API](./low-level-jobs.md)。
 
-七牛 SDK/API 的上传凭证及私有下载链接由服务端生成；大图不经过 Vercel 函数请求体。签发上传凭证时还要配置禁止覆盖，不能让后续上传更改已经验证过的对象。若七牛的某项策略不能强制 MIME/内容约束，以对象元数据核验和 worker 内容检查为最终保障。
+服务端使用 Node.js crypto 按七牛 Kodo 协议签发上传凭证、授权对象 stat 请求并生成私有下载签名链接；`QINIU_ACCESS_KEY`、`QINIU_SECRET_KEY`、`QINIU_BUCKET`、`QINIU_UPLOAD_URL`、`QINIU_PRIVATE_DOMAIN` 仅存服务端环境。大图不经过 Vercel 函数请求体。上传凭证绑定单 key、十分钟 TTL、`insertOnly`、20 MiB 限制及 JPEG/PNG/WebP MIME 限制，不能让后续上传更改已经验证过的对象。用户创建任务时服务端重新查询 Kodo stat 核对大小和 MIME。若七牛的某项策略不能强制真实内容约束，以未来 worker 的图片解码检查为最终保障。
+
+用户浏览器使用 multipart/form-data 直接 POST 到所配置上传 endpoint，字段为 `token`、`key`、`file`。七牛 bucket CORS 必须允许本地和生产站点的准确 origin、POST/OPTIONS；不要将 AK/SK 交给浏览器。
 
 ## worker 输入与结果
 
