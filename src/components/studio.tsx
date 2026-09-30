@@ -272,13 +272,17 @@ export default function Studio() {
         const data = await response.json() as { job?: { status: LiveJob["status"]; errorCode?: string | null } };
         if (!response.ok || !data.job || cancelled) throw new Error("job_status_unavailable");
         const status = data.job.status;
-        setLiveJob((current) => current?.id === jobId ? { ...current, status, errorCode: data.job?.errorCode ?? undefined } : current);
         if (status === "succeeded") {
           const resultResponse = await fetch(`/api/jobs/${jobId}/result`, { cache: "no-store" });
           const resultData = await resultResponse.json() as { results?: LiveResult[] };
-          if (resultResponse.ok && !cancelled) setLiveResults(resultData.results ?? []);
+          if (!resultResponse.ok) throw new Error("job_result_unavailable");
+          if (!cancelled) {
+            setLiveResults(resultData.results ?? []);
+            setLiveJob((current) => current?.id === jobId ? { ...current, status, errorCode: data.job?.errorCode ?? undefined } : current);
+          }
           return;
         }
+        setLiveJob((current) => current?.id === jobId ? { ...current, status, errorCode: data.job?.errorCode ?? undefined } : current);
         if (status === "queued" || status === "running") timer = setTimeout(poll, 4000);
       } catch {
         if (!cancelled) timer = setTimeout(poll, 6000);
