@@ -1,8 +1,9 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { getPool } from "@/lib/db";
 import { isAdminRequest } from "@/lib/admin-auth";
+import { createInvitationUrl, decryptInvitationCode, encryptInvitationCode } from "@/lib/invitation-secrets";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson, validateUserId } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -19,31 +20,6 @@ type IssuedInvitation = {
   expiresAt: Date | string | null;
   revokedAt: Date | string | null;
 };
-
-function encryptionKey(): Buffer {
-  const encoded = process.env.INVITATION_ENCRYPTION_KEY;
-  if (!encoded) throw new Error("INVITATION_ENCRYPTION_KEY_MISSING");
-  const key = Buffer.from(encoded, "base64");
-  if (key.length !== 32) throw new Error("INVITATION_ENCRYPTION_KEY_INVALID");
-  return key;
-}
-
-function encryptCode(code: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
-  const ciphertext = Buffer.concat([cipher.update(code, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `v1.${iv.toString("base64url")}.${tag.toString("base64url")}.${ciphertext.toString("base64url")}`;
-}
-
-function decryptCode(value: string | null): string {
-  if (!value) throw new Error("INVITATION_CIPHER_NOT_AVAILABLE");
-  const [version, iv, tag, ciphertext] = value.split(".");
-  if (version !== "v1" || !iv || !tag || !ciphertext) throw new Error("INVITATION_CIPHER_INVALID");
-  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), Buffer.from(iv, "base64url"));
-  decipher.setAuthTag(Buffer.from(tag, "base64url"));
-  return Buffer.concat([decipher.update(Buffer.from(ciphertext, "base64url")), decipher.final()]).toString("utf8");
-}
 
 function makeCode(bytes: Buffer): string {
   let buffer = 0;
@@ -65,22 +41,8 @@ function normalizeCode(code: string): string {
   return code.normalize("NFKC").toUpperCase().replace(/[\s-]/g, "");
 }
 
-function linkFor(code: string): string {
-  const configuredBase = process.env.APP_BASE_URL;
-  if (!configuredBase) throw new Error("APP_BASE_URL_MISSING");
-  const base = new URL(configuredBase);
-  if (process.env.NODE_ENV === "production" && base.protocol !== "https:") throw new Error("APP_BASE_URL_MUST_USE_HTTPS");
-  base.pathname = "/";
-  base.search = "";
-  base.hash = new URLSearchParams({ invite: code }).toString();
-  return base.toString();
-}
-
 function validateLinkConfiguration(): void {
-  const configuredBase = process.env.APP_BASE_URL;
-  if (!configuredBase) throw new Error("APP_BASE_URL_MISSING");
-  const base = new URL(configuredBase);
-  if (process.env.NODE_ENV === "production" && base.protocol !== "https:") throw new Error("APP_BASE_URL_MUST_USE_HTTPS");
+  createInvitationUrl("configuration-check");
 }
 
 function inviteTtlDays(): number {
@@ -116,12 +78,12 @@ async function findIssuedInvitation(connection: PoolConnection, sourceRef: strin
 }
 
 function issueResponse(invitation: IssuedInvitation, idempotent: boolean): Response {
-  const code = decryptCode(invitation.codeCiphertext);
+  const code = invitation.codeCiphertext ? decryptInvitationCode(invitation.codeCiphertext) : "";
   const expiresAt = invitation.expiresAt ? new Date(invitation.expiresAt).toISOString() : null;
   return jsonResponse({
     userId: invitation.userId,
     invitationId: invitation.id,
-    inviteUrl: linkFor(code),
+    inviteUrl: createInvitationUrl(code),
     expiresAt,
     idempotent,
   }, idempotent ? 200 : 201);
@@ -147,7 +109,7 @@ export async function POST(request: Request): Promise<Response> {
   let ttlDays: number;
   try {
     // Fail before writing an invitation if delivery configuration is incomplete.
-    encryptionKey();
+    encryptInvitationCode("configuration-check");
     validateLinkConfiguration();
     ttlDays = inviteTtlDays();
   } catch (error) {
@@ -163,6 +125,15 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     await connection.beginTransaction();
+    await connection.execute(
+      "INSERT INTO users (id, created_at) VALUES (?, UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE id = id",
+      [requestData.userId],
+    );
+    const [userRows] = await connection.execute<RowDataPacket[]>("SELECT disabled_at AS disabledAt FROM users WHERE id = ? FOR UPDATE", [requestData.userId]);
+    if (!userRows[0] || userRows[0].disabledAt) {
+      await connection.rollback();
+      return jsonResponse({ error: "user_disabled" }, 409);
+    }
     const existing = await findIssuedInvitation(connection, requestData.sourceRef);
     if (existing) {
       if (existing.userId !== requestData.userId) {
@@ -177,17 +148,13 @@ export async function POST(request: Request): Promise<Response> {
       return issueResponse(existing, true);
     }
 
-    await connection.execute(
-      "INSERT INTO users (id, created_at) VALUES (?, UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE id = id",
-      [requestData.userId],
-    );
     const rawCode = makeCode(randomBytes(20));
     const normalizedCode = normalizeCode(rawCode);
     const invitation: IssuedInvitation = {
       id: randomUUID(),
       userId: requestData.userId,
       codeHash: createHash("sha256").update(normalizedCode).digest("hex"),
-      codeCiphertext: encryptCode(rawCode),
+      codeCiphertext: encryptInvitationCode(rawCode),
       expiresAt: new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000),
       revokedAt: null,
     };

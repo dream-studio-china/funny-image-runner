@@ -3,6 +3,8 @@ import type { RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { getPool } from "@/lib/db";
 import { isAdminRequest } from "@/lib/admin-auth";
+import { hashSecret } from "@/lib/auth";
+import { encryptInvitationCode } from "@/lib/invitation-secrets";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson, validateUserId } from "@/lib/http";
 
 export const runtime = "nodejs";
@@ -13,6 +15,7 @@ type InvitationInput = {
   batchId: string;
   ordinal: number;
   codeHash: string;
+  codeCiphertext: string | null;
   expiresAt: Date | null;
 };
 
@@ -20,7 +23,16 @@ function parseItem(value: unknown): InvitationInput | null {
   if (!isRecord(value) || !validateUserId(value.userId) ||
       typeof value.batchId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(value.batchId) ||
       !Number.isSafeInteger(value.ordinal) || (value.ordinal as number) < 1 ||
-      typeof value.codeHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.codeHash)) return null;
+      typeof value.codeHash !== "string" || !/^[a-f0-9]{64}$/i.test(value.codeHash) ||
+      (value.code !== undefined && typeof value.code !== "string")) return null;
+
+  let codeCiphertext: string | null = null;
+  if (typeof value.code === "string") {
+    const normalizedCode = value.code.normalize("NFKC").toUpperCase().replace(/[\s-]/g, "");
+    if (normalizedCode.length < 12 || !/^[0-9A-HJKMNP-TV-Z]+$/.test(normalizedCode)) return null;
+    if (hashSecret(normalizedCode) !== value.codeHash.toLowerCase()) return null;
+    codeCiphertext = encryptInvitationCode(value.code);
+  }
 
   let expiresAt: Date | null = null;
   if (value.expiresAt !== undefined && value.expiresAt !== null) {
@@ -33,6 +45,7 @@ function parseItem(value: unknown): InvitationInput | null {
     batchId: value.batchId,
     ordinal: value.ordinal as number,
     codeHash: value.codeHash.toLowerCase(),
+    codeCiphertext,
     expiresAt,
   };
 }
@@ -54,7 +67,13 @@ export async function POST(request: Request): Promise<Response> {
   if (!isRecord(body) || !Array.isArray(body.items) || body.items.length < 1 || body.items.length > 100) {
     return jsonResponse({ error: "invalid_request" }, 400);
   }
-  const items = body.items.map(parseItem);
+  let items: Array<InvitationInput | null>;
+  try {
+    items = body.items.map(parseItem);
+  } catch (error) {
+    console.error("Invitation encryption configuration error", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
   if (items.some((item) => item === null)) return jsonResponse({ error: "invalid_invitation" }, 400);
   const parsedItems = items as InvitationInput[];
   const compoundKeys = new Set<string>();
@@ -76,7 +95,7 @@ export async function POST(request: Request): Promise<Response> {
         [item.userId],
       );
       const [rows] = await connection.execute<RowDataPacket[]>(
-        "SELECT id, user_id AS userId, code_hash AS codeHash, expires_at AS expiresAt FROM invitations WHERE batch_id = ? AND ordinal = ? FOR UPDATE",
+        "SELECT id, user_id AS userId, code_hash AS codeHash, code_ciphertext AS codeCiphertext, expires_at AS expiresAt FROM invitations WHERE batch_id = ? AND ordinal = ? FOR UPDATE",
         [item.batchId, item.ordinal],
       );
       if (rows[0]) {
@@ -85,11 +104,14 @@ export async function POST(request: Request): Promise<Response> {
         if (old.userId !== item.userId || old.codeHash !== item.codeHash || !sameExpiration) {
           throw new Error("INVITATION_CONFLICT");
         }
+        if (!old.codeCiphertext && item.codeCiphertext) {
+          await connection.execute("UPDATE invitations SET code_ciphertext = ? WHERE id = ? AND code_ciphertext IS NULL", [item.codeCiphertext, old.id]);
+        }
         continue;
       }
       await connection.execute(
-        "INSERT INTO invitations (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?)",
-        [randomUUID(), item.userId, item.batchId, item.ordinal, item.codeHash, item.expiresAt],
+        "INSERT INTO invitations (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at, code_ciphertext) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?, ?)",
+        [randomUUID(), item.userId, item.batchId, item.ordinal, item.codeHash, item.expiresAt, item.codeCiphertext],
       );
       await connection.execute(
         "INSERT INTO audit_events (id, actor_type, action, target_id, metadata, created_at) VALUES (?, 'admin', 'invitation.imported', ?, ?, UTC_TIMESTAMP(3))",

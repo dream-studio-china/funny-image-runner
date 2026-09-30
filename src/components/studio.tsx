@@ -42,6 +42,47 @@ type SavedJob = { id: string; presetId: string; status: LiveJob["status"]; creat
 const HISTORY_KEY = "dream-studio-demo-history-v1";
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_SIZE = 20 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 2_000_000;
+
+type PreparedImage = { file: File; originalWidth: number; originalHeight: number; optimized: boolean };
+
+async function prepareImageForUpload(source: File): Promise<PreparedImage> {
+  const bitmap = await createImageBitmap(source);
+  try {
+    const originalWidth = bitmap.width;
+    const originalHeight = bitmap.height;
+    const originalPixels = originalWidth * originalHeight;
+    if (originalPixels <= MAX_IMAGE_PIXELS && source.size <= MAX_SIZE) {
+      return { file: source, originalWidth, originalHeight, optimized: false };
+    }
+
+    const scale = Math.min(1, Math.sqrt(MAX_IMAGE_PIXELS / originalPixels));
+    const width = Math.max(1, Math.floor(originalWidth * scale));
+    const height = Math.max(1, Math.floor(originalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("无法处理这张图片，请换一张再试。");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(bitmap, 0, 0, width, height);
+
+    const qualities = [0.88, 0.8, 0.72, 0.64, 0.56, 0.48];
+    let jpeg: Blob | null = null;
+    for (const quality of qualities) {
+      jpeg = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (jpeg && jpeg.size <= MAX_SIZE) break;
+    }
+    if (!jpeg || jpeg.size > MAX_SIZE) throw new Error("图片已缩小并压缩，但仍超过上传限制。请换一张图片后重试。");
+
+    const baseName = source.name.replace(/\.[^.]+$/, "") || "photo";
+    const file = new File([jpeg], `${baseName}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+    return { file, originalWidth, originalHeight, optimized: true };
+  } finally {
+    bitmap.close();
+  }
+}
 
 function scrollToSection(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -96,6 +137,7 @@ export default function Studio() {
   const [mood, setMood] = useState(presets[0].moods[0]);
   const [note, setNote] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [isPreparingImage, setIsPreparingImage] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
@@ -255,24 +297,30 @@ export default function Studio() {
     };
   }, [showAccess]);
 
-  const acceptFile = useCallback((candidate?: File) => {
+  const acceptFile = useCallback(async (candidate?: File) => {
     if (!candidate) return;
     if (!ACCEPTED_TYPES.includes(candidate.type)) {
       setToast("请上传 JPG、PNG 或 WebP 格式的图片");
       return;
     }
-    if (candidate.size > MAX_SIZE) {
-      setToast("图片不能超过 20 MB，换一张试试吧");
-      return;
+    setIsPreparingImage(true);
+    try {
+      const prepared = await prepareImageForUpload(candidate);
+      if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+      const url = URL.createObjectURL(prepared.file);
+      previewRef.current = url;
+      setPreviewUrl(url);
+      setFile(prepared.file);
+      setStage("idle");
+      setActiveJob(null);
+      setToast(prepared.optimized
+        ? `图片已缩放为 ${Math.round(prepared.file.size / 1024)} KB JPEG（不超过 2M 像素）`
+        : "图片已准备好，挑选喜欢的风格吧");
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : "图片处理失败，请换一张再试。");
+    } finally {
+      setIsPreparingImage(false);
     }
-    if (previewRef.current) URL.revokeObjectURL(previewRef.current);
-    const url = URL.createObjectURL(candidate);
-    previewRef.current = url;
-    setPreviewUrl(url);
-    setFile(candidate);
-    setStage("idle");
-    setActiveJob(null);
-    setToast("图片已准备好，挑选喜欢的风格吧");
   }, []);
 
   function removeFile() {
@@ -304,6 +352,7 @@ export default function Studio() {
     }
     setLiveJob(null);
     setLiveResults([]);
+    setIsPreparingImage(false);
     if (stage === "queued" || stage === "creating") return;
     timeoutRefs.current.forEach(clearTimeout);
     const job: DemoJob = {
@@ -417,7 +466,7 @@ export default function Studio() {
       });
       const result = await response.json() as { userId?: string; error?: string };
       if (!response.ok || !result.userId) {
-        setInviteError(result.error === "service_unavailable" ? "服务暂时不可用，请稍后再试。" : "邀请码无效、已使用或已过期，请检查后重试。");
+        setInviteError(result.error === "service_unavailable" ? "服务暂时不可用，请稍后再试。" : "登录链接无效、已过期或已撤销，请检查后重试。");
         return;
       }
       setAuthenticatedUser(result.userId);
@@ -442,7 +491,7 @@ export default function Studio() {
     }
   }
 
-  const isRunning = stage === "queued" || stage === "creating" || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running";
+  const isRunning = isPreparingImage || stage === "queued" || stage === "creating" || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running";
   const resultPreset = presetOptions.find((preset) => preset.id === (liveJob?.presetId ?? activeJob?.presetId)) ?? selected;
 
   return (
@@ -511,7 +560,7 @@ export default function Studio() {
                 onDragLeave={(event) => { event.preventDefault(); setIsDragging(false); }}
                 onDrop={(event) => { event.preventDefault(); setIsDragging(false); acceptFile(event.dataTransfer.files[0]); }}
               >
-                {previewUrl ? <div className="upload-preview"><div className="upload-image" role="img" aria-label="已上传照片预览" style={{ backgroundImage: `url("${previewUrl}")` }} /><div className="upload-preview-info"><span className="upload-ready"><Check size={14} /> 照片已就位</span><strong title={file?.name}>{file?.name}</strong><span>{file && (file.size / 1024 / 1024).toFixed(2)} MB · 仅在当前浏览器预览</span><div className="upload-preview-actions"><button type="button" onClick={() => inputRef.current?.click()}><RotateCcw size={16} /> 换一张</button><button type="button" onClick={removeFile}><X size={16} /> 移除</button></div></div></div> : <button type="button" className="upload-empty" onClick={() => inputRef.current?.click()}><span className="upload-icon"><ImagePlus size={28} strokeWidth={1.7} /></span><strong>点击上传你的照片 <span>↗</span></strong><span className="upload-subline">或把图片拖到这里，开始一段奇妙旅程</span><span className="upload-formats">JPG、PNG、WEBP <span>·</span> 最大 20 MB</span></button>}
+                {previewUrl ? <div className="upload-preview"><div className="upload-image" role="img" aria-label="已上传照片预览" style={{ backgroundImage: `url("${previewUrl}")` }} /><div className="upload-preview-info"><span className="upload-ready"><Check size={14} /> 照片已就位</span><strong title={file?.name}>{file?.name}</strong><span>{file && (file.size / 1024 / 1024).toFixed(2)} MB · 仅在当前浏览器预览</span><div className="upload-preview-actions"><button type="button" onClick={() => inputRef.current?.click()}><RotateCcw size={16} /> 换一张</button><button type="button" onClick={removeFile}><X size={16} /> 移除</button></div></div></div> : <button type="button" className="upload-empty" onClick={() => inputRef.current?.click()} disabled={isPreparingImage}><span className="upload-icon"><ImagePlus size={28} strokeWidth={1.7} /></span><strong>{isPreparingImage ? "正在适配图片…" : <>点击上传你的照片 <span>↗</span></>}</strong><span className="upload-subline">或把图片拖到这里，开始一段奇妙旅程</span><span className="upload-formats">JPG、PNG、WEBP <span>·</span> 原图大小不限 · 超过 2M 像素自动转 JPG</span></button>}
                 <span className="upload-corner corner-tl" /><span className="upload-corner corner-br" />
               </div>
             </div>
@@ -560,7 +609,7 @@ export default function Studio() {
       <footer className="site-footer"><div className="container footer-inner"><div><div className="footer-logo">✳ 咔嚓造梦局</div><p>让每一张平凡的照片，都有做梦的权利。</p></div><div className="footer-right"><span>MADE FOR THE DAYDREAMERS ✦</span><small>当前为交互演示 · 图像生成服务尚未接入</small></div></div></footer>
 
       <nav className="mobile-bottom-nav" aria-label="快捷导航"><button type="button" onClick={() => scrollToSection("top")}><Sparkles size={21} /><span>发现</span></button><button type="button" className="mobile-nav-create" onClick={() => scrollToSection("studio")}><Plus size={26} strokeWidth={2.4} /><span>创作</span></button><button type="button" onClick={() => scrollToSection("my-works")}><Heart size={21} /><span>作品</span></button></nav>
-      {showAccess && <div className="access-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAccess(false); }}><div className="access-dialog" role="dialog" aria-modal="true" aria-labelledby="access-title"><button ref={accessCloseRef} type="button" className="access-close" onClick={() => setShowAccess(false)} aria-label="关闭邀请码窗口"><X size={19} /></button><div className="access-symbol">✳</div><span className="progress-kicker">A LITTLE INVITATION</span><h2 id="access-title">欢迎来到<br /><em>造梦局。</em></h2><p>输入管理员发给你的专属邀请码，开启你的创作空间。</p><form onSubmit={redeemCode}><label className="invite-code-label" htmlFor="invite-code">专属邀请码</label><input id="invite-code" className="invite-code-input" autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} maxLength={64} value={inviteCode} onChange={(event) => { setInviteCode(event.target.value); setInviteError(""); }} placeholder="XXXXX-XXXXX-XXXXX" required aria-describedby={inviteError ? "invite-error" : "invite-hint"} />{inviteError ? <span id="invite-error" className="invite-error" role="alert">{inviteError}</span> : <span id="invite-hint" className="access-hint">每个邀请码仅可使用一次</span>}<button type="submit" className="primary-button access-action" disabled={isRedeeming}>{isRedeeming ? "正在验证…" : "验证并进入"}<ArrowRight size={17} /></button></form><button type="button" className="access-demo-link" onClick={() => { setShowAccess(false); scrollToSection("studio"); }}>先看看演示 <ArrowRight size={15} /></button></div></div>}
+      {showAccess && <div className="access-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAccess(false); }}><div className="access-dialog" role="dialog" aria-modal="true" aria-labelledby="access-title"><button ref={accessCloseRef} type="button" className="access-close" onClick={() => setShowAccess(false)} aria-label="关闭邀请码窗口"><X size={19} /></button><div className="access-symbol">✳</div><span className="progress-kicker">A LITTLE INVITATION</span><h2 id="access-title">欢迎来到<br /><em>造梦局。</em></h2><p>输入管理员发给你的专属邀请码，开启你的创作空间。</p><form onSubmit={redeemCode}><label className="invite-code-label" htmlFor="invite-code">专属邀请码</label><input id="invite-code" className="invite-code-input" autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} maxLength={64} value={inviteCode} onChange={(event) => { setInviteCode(event.target.value); setInviteError(""); }} placeholder="XXXXX-XXXXX-XXXXX" required aria-describedby={inviteError ? "invite-error" : "invite-hint"} />{inviteError ? <span id="invite-error" className="invite-error" role="alert">{inviteError}</span> : <span id="invite-hint" className="access-hint">可重复登录，直到邀请码过期或被管理员撤销</span>}<button type="submit" className="primary-button access-action" disabled={isRedeeming}>{isRedeeming ? "正在验证…" : "验证并进入"}<ArrowRight size={17} /></button></form><button type="button" className="access-demo-link" onClick={() => { setShowAccess(false); scrollToSection("studio"); }}>先看看演示 <ArrowRight size={15} /></button></div></div>}
       {toast && <div className="toast" role="status"><Sparkles size={16} />{toast}<button type="button" aria-label="关闭提示" onClick={() => setToast("")}><X size={15} /></button></div>}
     </div>
   );

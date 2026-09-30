@@ -19,10 +19,10 @@ export async function POST(request: Request, { params }: Context): Promise<Respo
   if (!/^[0-9a-f-]{36}$/i.test(id)) return jsonResponse({ error: "invitation_not_found" }, 404);
   try {
     const [result] = await getPool().execute(
-      "UPDATE invitations SET revoked_at = UTC_TIMESTAMP(3) WHERE id = ? AND redeemed_at IS NULL AND revoked_at IS NULL",
+      "UPDATE invitations SET revoked_at = UTC_TIMESTAMP(3) WHERE id = ? AND revoked_at IS NULL",
       [id],
     );
-    if (!("affectedRows" in result) || result.affectedRows !== 1) return jsonResponse({ error: "invitation_not_found_or_used" }, 409);
+    if (!("affectedRows" in result) || result.affectedRows !== 1) return jsonResponse({ error: "invitation_not_found_or_revoked" }, 409);
     await getPool().execute(
       "INSERT INTO audit_events (id, actor_type, action, target_id, created_at) VALUES (?, 'admin', 'invitation.revoked', ?, UTC_TIMESTAMP(3))",
       [randomUUID(), id],

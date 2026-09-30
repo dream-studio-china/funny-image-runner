@@ -61,7 +61,7 @@ for (let i = 0; i < count; i += 1) {
     .subarray(0, 20);
   const code = formatCode(encodeBase32(bytes));
   const codeHash = createHash("sha256").update(normalizeCode(code)).digest("hex");
-  items.push({ userId, batchId, ordinal, codeHash });
+  items.push({ userId, batchId, ordinal, codeHash, code });
   issuedCodes.push({ userId, ordinal, code });
 }
 

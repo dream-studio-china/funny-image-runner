@@ -61,23 +61,22 @@ export async function redeemInvitation(code: string): Promise<{ userId: string; 
     );
     const invitation = rows[0];
     const currentTime = new Date();
-    if (!invitation || invitation.redeemedAt || invitation.revokedAt || invitation.disabledAt || (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime)) {
+    if (!invitation || invitation.revokedAt || invitation.disabledAt || (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime)) {
       throw new Error("INVITATION_INVALID");
     }
 
-    const [updated] = await connection.execute(
-      "UPDATE invitations SET redeemed_at = UTC_TIMESTAMP(3) WHERE id = ? AND redeemed_at IS NULL AND revoked_at IS NULL",
+    await connection.execute(
+      "UPDATE invitations SET redeemed_at = COALESCE(redeemed_at, UTC_TIMESTAMP(3)) WHERE id = ? AND revoked_at IS NULL",
       [invitation.id],
     );
-    if ("affectedRows" in updated && updated.affectedRows !== 1) throw new Error("INVITATION_INVALID");
 
     await connection.execute(
       "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, UTC_TIMESTAMP(3), ?)",
       [sessionId, invitation.userId, hashSecret(token), expiresAt],
     );
     await connection.execute(
-      "INSERT INTO audit_events (id, actor_type, actor_id, action, target_id, created_at) VALUES (?, 'user', ?, 'invitation.redeemed', ?, UTC_TIMESTAMP(3))",
-      [randomUUID(), invitation.userId, invitation.id],
+      "INSERT INTO audit_events (id, actor_type, actor_id, action, target_id, metadata, created_at) VALUES (?, 'user', ?, ?, ?, ?, UTC_TIMESTAMP(3))",
+      [randomUUID(), invitation.userId, invitation.redeemedAt ? "invitation.reused" : "invitation.redeemed", invitation.id, JSON.stringify({ sessionId })],
     );
     await connection.commit();
     return { userId: invitation.userId as string, token, expiresAt };
