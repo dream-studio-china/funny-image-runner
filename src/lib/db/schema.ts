@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   char,
   datetime,
+  boolean,
   index,
   int,
   json,
@@ -29,6 +30,7 @@ export const invitations = mysqlTable("invitations", {
   createdAt: createdAt(),
   expiresAt: datetime("expires_at", { mode: "date", fsp: 3 }),
   redeemedAt: datetime("redeemed_at", { mode: "date", fsp: 3 }),
+  revokedAt: datetime("revoked_at", { mode: "date", fsp: 3 }),
   issueSource: varchar("issue_source", { length: 32 }),
   sourceRef: char("source_ref", { length: 64 }),
   codeCiphertext: text("code_ciphertext"),
@@ -50,6 +52,32 @@ export const sessions = mysqlTable("sessions", {
   uniqueIndex("sessions_token_hash_uq").on(table.tokenHash),
   index("sessions_user_idx").on(table.userId),
 ]);
+
+export const adminSessions = mysqlTable("admin_sessions", {
+  id: char("id", { length: 36 }).primaryKey(),
+  tokenHash: char("token_hash", { length: 64 }).notNull(),
+  createdAt: createdAt(),
+  expiresAt: datetime("expires_at", { mode: "date", fsp: 3 }).notNull(),
+  revokedAt: datetime("revoked_at", { mode: "date", fsp: 3 }),
+}, (table) => [uniqueIndex("admin_sessions_token_hash_uq").on(table.tokenHash)]);
+
+export const presets = mysqlTable("presets", {
+  id: varchar("id", { length: 80 }).primaryKey(),
+  version: int("version").notNull().default(1),
+  name: varchar("name", { length: 100 }).notNull(),
+  subtitle: varchar("subtitle", { length: 100 }).notNull(),
+  description: varchar("description", { length: 500 }).notNull(),
+  image: varchar("image", { length: 500 }).notNull(),
+  tint: char("tint", { length: 7 }).notNull(),
+  accent: char("accent", { length: 7 }).notNull(),
+  tag: varchar("tag", { length: 40 }).notNull(),
+  promptLabel: varchar("prompt_label", { length: 100 }).notNull(),
+  promptPlaceholder: varchar("prompt_placeholder", { length: 200 }).notNull(),
+  moods: json("moods").$type<string[]>().notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  workerConfig: json("worker_config").$type<Record<string, unknown> | null>(),
+  updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+});
 
 export const authRateLimits = mysqlTable("auth_rate_limits", {
   keyHash: char("key_hash", { length: 64 }).primaryKey(),

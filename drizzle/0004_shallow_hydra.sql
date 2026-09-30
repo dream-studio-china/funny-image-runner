@@ -1,0 +1,1 @@
+ALTER TABLE `invitations` ADD `revoked_at` datetime(3);

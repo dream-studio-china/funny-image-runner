@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { getPool } from "@/lib/db";
-import { safeEqual } from "@/lib/auth";
-import { isRecord, jsonResponse, readJson, validateUserId } from "@/lib/http";
+import { isAdminRequest } from "@/lib/admin-auth";
+import { isRecord, isSameOriginRequest, jsonResponse, readJson, validateUserId } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,14 +15,6 @@ type InvitationInput = {
   codeHash: string;
   expiresAt: Date | null;
 };
-
-function adminAuthorized(request: Request): boolean {
-  const secret = process.env.ADMIN_API_TOKEN;
-  if (!secret) return false;
-  const value = request.headers.get("authorization") ?? "";
-  if (!value.startsWith("Bearer ")) return false;
-  return safeEqual(value.slice(7), secret);
-}
 
 function parseItem(value: unknown): InvitationInput | null {
   if (!isRecord(value) || !validateUserId(value.userId) ||
@@ -46,7 +38,12 @@ function parseItem(value: unknown): InvitationInput | null {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!adminAuthorized(request)) return jsonResponse({ error: "unauthorized" }, 401);
+  if (request.headers.has("cookie") && !isSameOriginRequest(request)) return jsonResponse({ error: "origin_not_allowed" }, 403);
+  try {
+    if (!await isAdminRequest(request)) return jsonResponse({ error: "unauthorized" }, 401);
+  } catch {
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
 
   let body: unknown;
   try {

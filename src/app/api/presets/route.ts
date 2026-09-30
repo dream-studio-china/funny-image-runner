@@ -1,10 +1,17 @@
-import { presets } from "@/lib/presets";
+import { getStoredPresets } from "@/lib/preset-store";
 import { jsonResponse } from "@/lib/http";
 
-export const dynamic = "force-static";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
-  return jsonResponse({ presets: presets.map(({ id, version, name, subtitle, description, image, tint, accent, tag, promptLabel, promptPlaceholder, moods }) => ({
-    id, version, name, subtitle, description, image, tint, accent, tag, promptLabel, promptPlaceholder, moods,
-  })) });
+  try {
+    const availablePresets = await getStoredPresets();
+    return jsonResponse({ presets: availablePresets.map(({ id, version, name, subtitle, description, image, tint, accent, tag, promptLabel, promptPlaceholder, moods }) => ({
+      id, version, name, subtitle, description, image, tint, accent, tag, promptLabel, promptPlaceholder, moods,
+    })) });
+  } catch (error) {
+    console.error("Preset list query failed", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
 }

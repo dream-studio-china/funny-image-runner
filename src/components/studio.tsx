@@ -91,6 +91,7 @@ function PresetCard({ preset, selected, disabled, onSelect }: { preset: Preset; 
 }
 
 export default function Studio() {
+  const [presetOptions, setPresetOptions] = useState(presets);
   const [selectedId, setSelectedId] = useState(presets[0].id);
   const [mood, setMood] = useState(presets[0].moods[0]);
   const [note, setNote] = useState("");
@@ -116,7 +117,7 @@ export default function Studio() {
   const accessCloseRef = useRef<HTMLButtonElement>(null);
   const timeoutRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
   const previewRef = useRef<string | null>(null);
-  const selected = presets.find((preset) => preset.id === selectedId) ?? presets[0];
+  const selected = presetOptions.find((preset) => preset.id === selectedId) ?? presetOptions[0] ?? presets[0];
   const liveJobId = liveJob?.id;
   const liveJobStatus = liveJob?.status;
 
@@ -148,6 +149,21 @@ export default function Studio() {
     fetch("/api/auth/me", { signal: controller.signal, cache: "no-store" })
       .then(async (response) => response.ok ? response.json() as Promise<{ userId: string }> : null)
       .then((result) => { if (result?.userId) setAuthenticatedUser(result.userId); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/presets", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() as Promise<{ presets?: Preset[] }> : null)
+      .then((result) => {
+        if (!result?.presets?.length) return;
+        setPresetOptions(result.presets);
+        const selectedPreset = result.presets[0];
+        setSelectedId(selectedPreset.id);
+        setMood(selectedPreset.moods[0]);
+      })
       .catch(() => undefined);
     return () => controller.abort();
   }, []);
@@ -427,7 +443,7 @@ export default function Studio() {
   }
 
   const isRunning = stage === "queued" || stage === "creating" || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running";
-  const resultPreset = presets.find((preset) => preset.id === (liveJob?.presetId ?? activeJob?.presetId)) ?? selected;
+  const resultPreset = presetOptions.find((preset) => preset.id === (liveJob?.presetId ?? activeJob?.presetId)) ?? selected;
 
   return (
     <div className="site-shell">
@@ -502,7 +518,7 @@ export default function Studio() {
 
             <div className="step-block" id="choose-preset">
               <div className="step-header"><div className="step-number">02</div><div><h3>挑一个心动的风格</h3><p>每一种想象，都有不一样的打开方式。</p></div><span className="step-side-label">PICK YOUR MAGIC ↗</span></div>
-              <div className="preset-grid">{presets.map((preset) => <PresetCard key={preset.id} preset={preset} disabled={isRunning} selected={selected.id === preset.id} onSelect={() => selectPreset(preset)} />)}</div>
+              <div className="preset-grid">{presetOptions.map((preset) => <PresetCard key={preset.id} preset={preset} disabled={isRunning} selected={selected.id === preset.id} onSelect={() => selectPreset(preset)} />)}</div>
               <div className="selected-preset-note"><Sparkles size={16} /><span><b>{selected.name}</b> · {selected.description}</span></div>
             </div>
 
@@ -521,20 +537,20 @@ export default function Studio() {
           </div>
         </section>
 
-        <section className="inspiration-section" id="inspiration" aria-labelledby="inspiration-title"><div className="container"><div className="section-heading"><div><SectionKicker number="A LITTLE INSPIRATION">FOR THE CURIOUS ONES</SectionKicker><h2 id="inspiration-title">好玩的世界，<em>不止一种。</em></h2><p>先看看这些风格的样子，再挑你想走进去的那一个。</p></div><span className="inspiration-sun" aria-hidden="true">☼</span></div><div className="inspiration-grid">{presets.map((preset, index) => <button type="button" className="inspiration-item group" key={preset.id} onClick={() => { selectPreset(preset); scrollToSection("choose-preset"); }}><div className="inspiration-image"><Image src={preset.image} alt={`${preset.name}预制风格示例`} fill sizes="(max-width: 640px) 70vw, 280px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>0{index + 1}</span></div><div className="inspiration-caption"><span><strong>{preset.name}</strong><small>{preset.subtitle}</small></span><span className="inspiration-arrow"><ArrowRight size={18} /></span></div></button>)}</div><p className="gallery-disclaimer">以上均为预制风格示例插画，不代表实际生成结果。</p></div></section>
+        <section className="inspiration-section" id="inspiration" aria-labelledby="inspiration-title"><div className="container"><div className="section-heading"><div><SectionKicker number="A LITTLE INSPIRATION">FOR THE CURIOUS ONES</SectionKicker><h2 id="inspiration-title">好玩的世界，<em>不止一种。</em></h2><p>先看看这些风格的样子，再挑你想走进去的那一个。</p></div><span className="inspiration-sun" aria-hidden="true">☼</span></div><div className="inspiration-grid">{presetOptions.map((preset, index) => <button type="button" className="inspiration-item group" key={preset.id} onClick={() => { selectPreset(preset); scrollToSection("choose-preset"); }}><div className="inspiration-image"><Image src={preset.image} alt={`${preset.name}预制风格示例`} fill sizes="(max-width: 640px) 70vw, 280px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>{String(index + 1).padStart(2, "0")}</span></div><div className="inspiration-caption"><span><strong>{preset.name}</strong><small>{preset.subtitle}</small></span><span className="inspiration-arrow"><ArrowRight size={18} /></span></div></button>)}</div><p className="gallery-disclaimer">以上均为预制风格示例插画，不代表实际生成结果。</p></div></section>
 
         <section className="works-section container" id="my-works" aria-labelledby="works-title">
           <div className="section-heading"><div><SectionKicker number="YOUR LITTLE COLLECTION">MADE WITH IMAGINATION</SectionKicker><h2 id="works-title">我的<em>灵感小册。</em></h2><p>每一次尝试，都值得留个纪念。</p></div><span className="works-count">{(history.length + savedJobs.length).toString().padStart(2, "0")} 个记录</span></div>
           {history.length || savedJobs.length ? <>
             <div className="works-grid">
               {savedJobs.map((job) => {
-                const preset = presets.find((item) => item.id === job.presetId) ?? presets[0];
+                const preset = presetOptions.find((item) => item.id === job.presetId) ?? presetOptions[0] ?? presets[0];
                 return <button type="button" className="work-card group" key={job.id} onClick={() => { void openSavedJob(job); }} aria-label={`查看${preset.name}任务，${jobStatusLabel(job.status)}`}>
                   <div className="task-art" style={{ backgroundColor: preset.tint }}><Sparkles size={38} style={{ color: preset.accent }} /><span>{jobStatusLabel(job.status)}</span></div>
                   <div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div>
                 </button>;
               })}
-              {history.map((job) => { const preset = presets.find((item) => item.id === job.presetId) ?? presets[0]; return <button type="button" className="work-card group" key={job.id} onClick={() => openJob(job)}><div className="work-art"><Image src={preset.image} alt={`${preset.name}示例样图`} fill sizes="(max-width: 640px) 45vw, 240px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>演示样图</span></div><div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div></button>; })}
+              {history.map((job) => { const preset = presetOptions.find((item) => item.id === job.presetId) ?? presetOptions[0] ?? presets[0]; return <button type="button" className="work-card group" key={job.id} onClick={() => openJob(job)}><div className="work-art"><Image src={preset.image} alt={`${preset.name}示例样图`} fill sizes="(max-width: 640px) 45vw, 240px" className="object-cover transition-transform duration-700 group-hover:scale-105" /><span>演示样图</span></div><div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div></button>; })}
             </div>
             {history.length > 0 && <button type="button" className="clear-history" onClick={() => { setHistory([]); try { localStorage.removeItem(HISTORY_KEY); } catch { /* browser storage may be disabled */ } setToast("演示记录已清空"); }}>清空演示记录</button>}
           </> : <div className="empty-works"><div className="empty-works-icon"><Images size={35} strokeWidth={1.4} /><span>✦</span></div><h3>这里还是一张白纸</h3><p>创造你的第一个作品，<br />让这本灵感小册热闹起来。</p><button type="button" className="secondary-button" onClick={() => scrollToSection("studio")}>去试试看 <ArrowRight size={17} /></button></div>}

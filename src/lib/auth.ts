@@ -53,19 +53,20 @@ export async function redeemInvitation(code: string): Promise<{ userId: string; 
   try {
     await connection.beginTransaction();
     const [rows] = await connection.execute<RowDataPacket[]>(
-      `SELECT i.id, i.user_id AS userId, i.redeemed_at AS redeemedAt, i.expires_at AS inviteExpiresAt, u.disabled_at AS disabledAt
+      `SELECT i.id, i.user_id AS userId, i.redeemed_at AS redeemedAt, i.revoked_at AS revokedAt,
+              i.expires_at AS inviteExpiresAt, u.disabled_at AS disabledAt
        FROM invitations i JOIN users u ON u.id = i.user_id
        WHERE i.code_hash = ? FOR UPDATE`,
       [hashSecret(normalized)],
     );
     const invitation = rows[0];
     const currentTime = new Date();
-    if (!invitation || invitation.redeemedAt || invitation.disabledAt || (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime)) {
+    if (!invitation || invitation.redeemedAt || invitation.revokedAt || invitation.disabledAt || (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime)) {
       throw new Error("INVITATION_INVALID");
     }
 
     const [updated] = await connection.execute(
-      "UPDATE invitations SET redeemed_at = UTC_TIMESTAMP(3) WHERE id = ? AND redeemed_at IS NULL",
+      "UPDATE invitations SET redeemed_at = UTC_TIMESTAMP(3) WHERE id = ? AND redeemed_at IS NULL AND revoked_at IS NULL",
       [invitation.id],
     );
     if ("affectedRows" in updated && updated.affectedRows !== 1) throw new Error("INVITATION_INVALID");

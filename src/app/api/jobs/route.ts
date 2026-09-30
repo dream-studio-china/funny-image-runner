@@ -3,7 +3,8 @@ import type { PoolConnection, RowDataPacket } from "mysql2/promise";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson } from "@/lib/http";
-import { presets } from "@/lib/presets";
+import { getStoredPresets } from "@/lib/preset-store";
+import type { StoredPreset } from "@/lib/preset-store";
 import { verifyUploadedObject } from "@/lib/qiniu";
 
 export const runtime = "nodejs";
@@ -18,10 +19,10 @@ type CreateJobBody = {
 
 type ExistingJob = RowDataPacket & { id: string; requestHash: string; status: string; presetId: string; presetVersion: number };
 
-function parseBody(value: unknown): CreateJobBody | null {
+function parseBody(value: unknown, availablePresets: StoredPreset[]): CreateJobBody | null {
   if (!isRecord(value) || !/^[0-9a-f-]{36}$/i.test(String(value.uploadId ?? "")) ||
       !/^[0-9a-f-]{36}$/i.test(String(value.idempotencyKey ?? "")) || typeof value.presetId !== "string" || !isRecord(value.parameters)) return null;
-  const preset = presets.find((item) => item.id === value.presetId);
+  const preset = availablePresets.find((item) => item.id === value.presetId);
   if (!preset) return null;
   const parameters: Record<string, string> = {};
   for (const [key, item] of Object.entries(value.parameters)) {
@@ -66,16 +67,23 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
+  let availablePresets: StoredPreset[];
+  try {
+    availablePresets = await getStoredPresets();
+  } catch {
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
+
   let body: CreateJobBody | null;
   try {
-    body = parseBody(await readJson(request, 16_384));
+    body = parseBody(await readJson(request, 16_384), availablePresets);
   } catch (error) {
     const tooLarge = error instanceof Error && error.message === "BODY_TOO_LARGE";
     return jsonResponse({ error: tooLarge ? "body_too_large" : "invalid_json" }, tooLarge ? 413 : 400);
   }
   if (!body) return jsonResponse({ error: "invalid_job" }, 400);
 
-  const preset = presets.find((item) => item.id === body.presetId)!;
+  const preset = availablePresets.find((item) => item.id === body.presetId)!;
   const requestHash = digestBody(body, preset.version);
   const connection = await getPool().getConnection().catch(() => null);
   if (!connection) return jsonResponse({ error: "service_unavailable" }, 503);

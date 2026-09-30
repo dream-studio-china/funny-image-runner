@@ -2,8 +2,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import type { RowDataPacket } from "mysql2";
 import type { PoolConnection } from "mysql2/promise";
 import { getPool } from "@/lib/db";
-import { safeEqual } from "@/lib/auth";
-import { isRecord, jsonResponse, readJson, validateUserId } from "@/lib/http";
+import { isAdminRequest } from "@/lib/admin-auth";
+import { isRecord, isSameOriginRequest, jsonResponse, readJson, validateUserId } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,13 +17,8 @@ type IssuedInvitation = {
   codeHash: string;
   codeCiphertext: string | null;
   expiresAt: Date | string | null;
+  revokedAt: Date | string | null;
 };
-
-function authorized(request: Request): boolean {
-  const expected = process.env.ADMIN_API_TOKEN;
-  const authorization = request.headers.get("authorization") ?? "";
-  return Boolean(expected && authorization.startsWith("Bearer ") && safeEqual(authorization.slice(7), expected));
-}
 
 function encryptionKey(): Buffer {
   const encoded = process.env.INVITATION_ENCRYPTION_KEY;
@@ -112,7 +107,8 @@ function validateRequest(body: unknown): { orderRef: string; userId: string; sou
 
 async function findIssuedInvitation(connection: PoolConnection, sourceRef: string): Promise<IssuedInvitation | null> {
   const [rows] = await connection.execute<RowDataPacket[]>(
-    `SELECT id, user_id AS userId, code_hash AS codeHash, code_ciphertext AS codeCiphertext, expires_at AS expiresAt
+    `SELECT id, user_id AS userId, code_hash AS codeHash, code_ciphertext AS codeCiphertext,
+            expires_at AS expiresAt, revoked_at AS revokedAt
      FROM invitations WHERE issue_source = ? AND source_ref = ? FOR UPDATE`,
     [SOURCE, sourceRef],
   );
@@ -132,7 +128,12 @@ function issueResponse(invitation: IssuedInvitation, idempotent: boolean): Respo
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (!authorized(request)) return jsonResponse({ error: "unauthorized" }, 401);
+  if (request.headers.has("cookie") && !isSameOriginRequest(request)) return jsonResponse({ error: "origin_not_allowed" }, 403);
+  try {
+    if (!await isAdminRequest(request)) return jsonResponse({ error: "unauthorized" }, 401);
+  } catch {
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
 
   let requestData: ReturnType<typeof validateRequest>;
   try {
@@ -168,6 +169,10 @@ export async function POST(request: Request): Promise<Response> {
         await connection.rollback();
         return jsonResponse({ error: "order_conflict" }, 409);
       }
+      if (existing.revokedAt) {
+        await connection.rollback();
+        return jsonResponse({ error: "invitation_revoked" }, 409);
+      }
       await connection.commit();
       return issueResponse(existing, true);
     }
@@ -184,6 +189,7 @@ export async function POST(request: Request): Promise<Response> {
       codeHash: createHash("sha256").update(normalizedCode).digest("hex"),
       codeCiphertext: encryptCode(rawCode),
       expiresAt: new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000),
+      revokedAt: null,
     };
     const batchId = `${SOURCE}-${requestData.sourceRef.slice(0, 48)}`;
     await connection.execute(

@@ -22,6 +22,20 @@
       "when": 1790731008745,
       "tag": "0002_chemical_franklin_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1790735079378,
+      "tag": "0003_even_proemial_gods",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1790735757242,
+      "tag": "0004_shallow_hydra",
+      "breakpoints": true
     }
   ]
 }
