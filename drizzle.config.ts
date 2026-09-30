@@ -1,5 +1,8 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import { defineConfig } from "drizzle-kit";
+
+dotenv.config({ path: ".env.local" });
+dotenv.config({ path: ".env" });
 
 const rawUrl = process.env.DATABASE_URL ?? "mysql://user:password@127.0.0.1:3306/funny_image_runner";
 const url = new URL(rawUrl);

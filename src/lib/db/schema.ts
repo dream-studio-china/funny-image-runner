@@ -29,9 +29,13 @@ export const invitations = mysqlTable("invitations", {
   createdAt: createdAt(),
   expiresAt: datetime("expires_at", { mode: "date", fsp: 3 }),
   redeemedAt: datetime("redeemed_at", { mode: "date", fsp: 3 }),
+  issueSource: varchar("issue_source", { length: 32 }),
+  sourceRef: char("source_ref", { length: 64 }),
+  codeCiphertext: text("code_ciphertext"),
 }, (table) => [
   uniqueIndex("invitations_code_hash_uq").on(table.codeHash),
   uniqueIndex("invitations_batch_ordinal_uq").on(table.batchId, table.ordinal),
+  uniqueIndex("invitations_source_ref_uq").on(table.issueSource, table.sourceRef),
   index("invitations_user_idx").on(table.userId),
 ]);
 

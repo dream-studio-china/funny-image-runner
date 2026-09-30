@@ -6,12 +6,12 @@
 
 | 位置 | 组件 | 必须配置的秘密/连接 |
 | --- | --- | --- |
-| Vercel | Next.js 页面和 Route Handlers | MySQL `DATABASE_URL`、七牛 AK/SK 与空间/区域/域名、管理员 API 凭证、worker API 凭证、会话 Cookie 配置 |
+| Vercel | Next.js 页面和 Route Handlers | MySQL `DATABASE_URL`、`ADMIN_API_TOKEN`、邀请码密文密钥、`APP_BASE_URL`，未来再配置七牛/worker 凭证 |
 | 阿里云 RDS | MySQL | 仅允许 Vercel/受信任运维来源访问；启用 TLS、自动备份与最小数据库权限；预览/生产隔离 |
 | 本地机器 | worker + ComfyUI + Tailscale | `WEB_API_BASE_URL`、worker API 凭证、ComfyUI 本地地址、工作流 JSON 与模型文件 |
 | 管理员可信设备 | 邀请码 CLI | 私有 `INVITE_SEED`、管理员 API 凭证；明文邀请码仅在交付时输出 |
 
-以上凭证不写入文档、Git 或 `NEXT_PUBLIC_*` 环境变量。首版用 HTTPS 公网入口仅供浏览器和主动外连的 worker 调用云端 API。worker 不开放入站 HTTP 端口；Tailscale 只对授权运维设备开放必要管理端口，使用 grants 做最小授权；ComfyUI 留在回环地址。Vercel 预览环境使用独立数据库、七牛对象前缀和 worker 凭证，避免预览任务流入生产 GPU。
+以上凭证不写入文档、Git 或 `NEXT_PUBLIC_*` 环境变量。自动发货系统以服务器端 Bearer 凭证调用邀请码签发 API；生产 `APP_BASE_URL` 必须使用 HTTPS。首版用 HTTPS 公网入口供浏览器和可信自动发货服务调用云端 API。worker 不开放入站 HTTP 端口；Tailscale 只对授权运维设备开放必要管理端口，使用 grants 做最小授权；ComfyUI 留在回环地址。Vercel 预览环境使用独立数据库和管理员凭证，避免预览环境发出的邀请码进入生产流程。
 
 ## 启动与发布顺序
 
