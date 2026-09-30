@@ -38,6 +38,8 @@ type LiveJob = {
 };
 type LiveResult = { index: number; contentType: string; url: string };
 type SavedJob = { id: string; presetId: string; status: LiveJob["status"]; createdAt: string; errorCode?: string | null };
+type PublicCategory = { id: string; name: string; sortOrder: number; enabled: boolean; image?: string | null };
+type PublicPreset = Preset & { categoryId?: string | null };
 
 const HISTORY_KEY = "dream-studio-demo-history-v1";
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
@@ -133,6 +135,8 @@ function PresetCard({ preset, selected, disabled, onSelect }: { preset: Preset; 
 
 export default function Studio() {
   const [presetOptions, setPresetOptions] = useState(presets);
+  const [categories, setCategories] = useState<PublicCategory[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [selectedId, setSelectedId] = useState(presets[0].id);
   const [mood, setMood] = useState(presets[0].moods[0]);
   const [note, setNote] = useState("");
@@ -198,8 +202,9 @@ export default function Studio() {
   useEffect(() => {
     const controller = new AbortController();
     fetch("/api/presets", { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => response.ok ? response.json() as Promise<{ presets?: Preset[] }> : null)
+      .then(async (response) => response.ok ? response.json() as Promise<{ presets?: PublicPreset[]; categories?: PublicCategory[] }> : null)
       .then((result) => {
+        setCategories((result?.categories ?? []).filter((category) => category.enabled).sort((a, b) => a.sortOrder - b.sortOrder));
         if (!result?.presets?.length) return;
         setPresetOptions(result.presets);
         const selectedPreset = result.presets[0];
@@ -493,6 +498,7 @@ export default function Studio() {
 
   const isRunning = isPreparingImage || stage === "queued" || stage === "creating" || liveJob?.status === "uploading" || liveJob?.status === "queued" || liveJob?.status === "running";
   const resultPreset = presetOptions.find((preset) => preset.id === (liveJob?.presetId ?? activeJob?.presetId)) ?? selected;
+  const visiblePresets = presetOptions.filter((preset) => categoryFilter === "all" || (preset as PublicPreset).categoryId === categoryFilter);
 
   return (
     <div className="site-shell">
@@ -567,7 +573,8 @@ export default function Studio() {
 
             <div className="step-block" id="choose-preset">
               <div className="step-header"><div className="step-number">02</div><div><h3>挑一个心动的风格</h3><p>每一种想象，都有不一样的打开方式。</p></div><span className="step-side-label">PICK YOUR MAGIC ↗</span></div>
-              <div className="preset-grid">{presetOptions.map((preset) => <PresetCard key={preset.id} preset={preset} disabled={isRunning} selected={selected.id === preset.id} onSelect={() => selectPreset(preset)} />)}</div>
+              {categories.length > 0 && <div className="category-filters" role="group" aria-label="按分类筛选预设"><button type="button" className={categoryFilter === "all" ? "is-active" : ""} onClick={() => setCategoryFilter("all")}>全部</button>{categories.map((category) => <button type="button" key={category.id} className={categoryFilter === category.id ? "is-active" : ""} style={category.image ? { backgroundImage: `linear-gradient(#ffffffd9,#ffffffd9), url("${category.image}")` } : undefined} onClick={() => setCategoryFilter(category.id)}>{category.name}</button>)}</div>}
+              <div className="preset-grid">{visiblePresets.map((preset) => <PresetCard key={preset.id} preset={preset} disabled={isRunning} selected={selected.id === preset.id} onSelect={() => selectPreset(preset)} />)}</div>
               <div className="selected-preset-note"><Sparkles size={16} /><span><b>{selected.name}</b> · {selected.description}</span></div>
             </div>
 

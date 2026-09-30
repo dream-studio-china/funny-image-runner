@@ -18,6 +18,7 @@ import {
   LogOut,
   Menu,
   Paintbrush2,
+  Plus,
   RefreshCw,
   Search,
   Server,
@@ -29,18 +30,43 @@ import {
 } from "lucide-react";
 import type { Preset } from "@/lib/presets";
 
-type Tab = "overview" | "invites" | "users" | "styles" | "comfyui";
+type Tab = "overview" | "invites" | "users" | "categories" | "presets" | "comfyui";
 type AdminUser = { id: string; createdAt: string; disabledAt: string | null; invitationCount: number; jobCount: number };
 type AdminInvitation = { id: string; userId: string; batchId: string; ordinal: number; issueSource: string | null; createdAt: string; expiresAt: string | null; redeemedAt: string | null; revokedAt: string | null };
 type UserInvitation = AdminInvitation & { inviteCode: string | null; inviteUrl: string | null; unavailableReason: "revoked" | "expired" | "hash_only" | null };
 type AdminJob = { id: string; status: string; phase: string | null; attempts: number; presetId: string; presetVersion: number; parameters: Record<string, string>; errorCode: string | null; createdAt: string; updatedAt: string; finishedAt: string | null; input: { url: string; contentType: string; size: number; createdAt: string }; outputs: { index: number; url: string; contentType: string; size: number }[] };
-type AdminPreset = Preset & { enabled: boolean; updatedAt: string };
+type AdminCategory = { id: string; name: string; sortOrder: number; enabled: boolean; coverAssetId: string | null; image?: string | null };
+type AdminPreset = Preset & { enabled: boolean; updatedAt?: string; categoryId: string | null; coverAssetId: string | null; coverImage?: string | null; workflow: unknown; prompt: unknown; negativePrompt: unknown; additional: unknown; nodeMapping: unknown };
+type CatalogDraft = Record<string, string>;
+
+const emptyPresetDraft: CatalogDraft = { id: "", name: "", subtitle: "", description: "", image: "", coverAssetId: "", categoryId: "", tint: "#e4dcf8", accent: "#7552bb", tag: "", promptLabel: "", promptPlaceholder: "", moods: "[]", workflow: "{}", prompt: "", negativePrompt: "", additional: "{}", nodeMapping: "{}", enabled: "true" };
+const catalogFieldLabels: Record<string, string> = {
+  id: "预设 ID",
+  name: "风格名称",
+  subtitle: "英文副标题",
+  description: "风格介绍",
+  categoryId: "所属分类",
+  tint: "背景颜色",
+  accent: "强调颜色",
+  tag: "展示标签",
+  promptLabel: "用户提示标题",
+  promptPlaceholder: "用户提示示例文案",
+  moods: "心情选项（JSON）",
+  workflow: "ComfyUI API 工作流（JSON）",
+  prompt: "正向提示词",
+  negativePrompt: "负向提示词",
+  additional: "固定附加参数（JSON）",
+  nodeMapping: "工作流节点映射（JSON）",
+};
+
+function jsonText(value: unknown): string { return JSON.stringify(value ?? {}, null, 2); }
 
 const tabs: { id: Tab; label: string; icon: typeof Activity }[] = [
   { id: "overview", label: "总览", icon: Activity },
   { id: "invites", label: "邀请码", icon: TicketCheck },
   { id: "users", label: "用户管理", icon: UsersRound },
-  { id: "styles", label: "风格配置", icon: Paintbrush2 },
+  { id: "categories", label: "分类目录", icon: Paintbrush2 },
+  { id: "presets", label: "预设目录", icon: Sparkles },
   { id: "comfyui", label: "ComfyUI", icon: Server },
 ];
 
@@ -76,6 +102,13 @@ export default function AdminDashboard() {
   const [userJobs, setUserJobs] = useState<Record<string, AdminJob[]>>({});
   const [loadingUserJobs, setLoadingUserJobs] = useState<string | null>(null);
   const [presets, setPresets] = useState<AdminPreset[]>([]);
+  const [categories, setCategories] = useState<AdminCategory[]>([]);
+  const [catalogDialog, setCatalogDialog] = useState<"category" | "preset" | null>(null);
+  const [editingId, setEditingId] = useState("");
+  const [categoryDraft, setCategoryDraft] = useState({ id: "", name: "", sortOrder: "0", enabled: true, coverAssetId: "", image: "" });
+  const [presetDraft, setPresetDraft] = useState<CatalogDraft>(emptyPresetDraft);
+  const [catalogError, setCatalogError] = useState("");
+  const [uploadingCover, setUploadingCover] = useState(false);
   const [search, setSearch] = useState("");
   const [userId, setUserId] = useState("");
   const [customerRef, setCustomerRef] = useState("");
@@ -97,12 +130,13 @@ export default function AdminDashboard() {
     const [userData, invitationData, presetData] = await Promise.all([
       requestJson<{ users: AdminUser[]; total: number }>(`/api/admin/users?limit=20&offset=${userPage * 20}&search=${encodeURIComponent(search)}`),
       requestJson<{ invitations: AdminInvitation[] }>("/api/admin/invitations?limit=100"),
-      requestJson<{ presets: AdminPreset[] }>("/api/admin/presets"),
+      requestJson<{ categories: AdminCategory[]; presets: AdminPreset[] }>("/api/admin/presets"),
     ]);
     setUsers(userData.users);
     setUserTotal(userData.total);
     setInvitations(invitationData.invitations);
     setPresets(presetData.presets);
+    setCategories(presetData.categories ?? []);
   }, [requestJson, search, userPage]);
 
   useEffect(() => {
@@ -272,23 +306,60 @@ export default function AdminDashboard() {
     }
   }
 
-  async function savePreset(preset: AdminPreset) {
-    setError("");
-    try {
-      await requestJson(`/api/admin/presets/${encodeURIComponent(preset.id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ ...preset, moods: preset.moods }),
-      });
-      await loadData();
-      setNotice(`已保存「${preset.name}」风格设置，新任务将使用新版本`);
-    } catch {
-      setError("风格设置不合法或保存失败，请检查必填项和心情列表");
-    }
+  function openCategory(category?: AdminCategory) {
+    setEditingId(category?.id ?? "");
+    setCategoryDraft(category ? { id: category.id, name: category.name, sortOrder: String(category.sortOrder), enabled: category.enabled, coverAssetId: category.coverAssetId ?? "", image: category.image ?? "" } : { id: "", name: "", sortOrder: String(categories.length), enabled: true, coverAssetId: "", image: "" });
+    setCatalogError(""); setCatalogDialog("category");
   }
 
-  function updatePreset(id: string, patch: Partial<AdminPreset>) {
-    setPresets((current) => current.map((preset) => preset.id === id ? { ...preset, ...patch } : preset));
+  function openPreset(preset?: AdminPreset) {
+    setEditingId(preset?.id ?? "");
+    setPresetDraft(preset ? { id: preset.id, name: preset.name, subtitle: preset.subtitle, description: preset.description, image: preset.image, coverAssetId: preset.coverAssetId ?? "", coverPreview: preset.coverImage ?? "", categoryId: preset.categoryId ?? "", tint: preset.tint, accent: preset.accent, tag: preset.tag, promptLabel: preset.promptLabel, promptPlaceholder: preset.promptPlaceholder, moods: JSON.stringify(preset.moods, null, 2), workflow: jsonText(preset.workflow), prompt: typeof preset.prompt === "string" ? preset.prompt : "", negativePrompt: typeof preset.negativePrompt === "string" ? preset.negativePrompt : "", additional: jsonText(preset.additional), nodeMapping: jsonText(preset.nodeMapping), enabled: String(preset.enabled) } : { ...emptyPresetDraft, categoryId: categories[0]?.id ?? "" });
+    setCatalogError(""); setCatalogDialog("preset");
   }
+
+  async function uploadCover(file?: File, target: "category" | "preset" = "preset") {
+    if (!file) return;
+    setUploadingCover(true); setCatalogError("");
+    try {
+      const credential = await requestJson<{ key: string; uploadUrl: string; uploadToken: string; maxBytes: number }>("/api/admin/preset-assets/upload", { method: "POST", body: JSON.stringify({ contentType: file.type, size: file.size }) });
+      if (file.size > credential.maxBytes) throw new Error(`图片不能超过 ${(credential.maxBytes / 1024 / 1024).toFixed(1)} MB`);
+      const form = new FormData(); form.append("token", credential.uploadToken); form.append("key", credential.key); form.append("file", file, file.name);
+      const response = await fetch(credential.uploadUrl, { method: "POST", body: form });
+      if (!response.ok) throw new Error("图片上传失败，请重试");
+      const result = await requestJson<{ assetId: string }>("/api/admin/preset-assets/confirm", { method: "POST", body: JSON.stringify({ key: credential.key, contentType: file.type, size: file.size }) });
+      const preview = URL.createObjectURL(file);
+      if (target === "category") setCategoryDraft((current) => ({ ...current, coverAssetId: result.assetId, image: preview }));
+      else setPresetDraft((current) => ({ ...current, coverAssetId: result.assetId, coverPreview: preview }));
+    } catch (reason) { setCatalogError(reason instanceof Error ? reason.message : "图片上传失败"); }
+    finally { setUploadingCover(false); }
+  }
+
+  async function saveCatalog(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setCatalogError("");
+    try {
+      if (catalogDialog === "category") {
+        if (!editingId && !categoryDraft.coverAssetId) throw new Error("请先上传分类主展示图");
+        const body = { name: categoryDraft.name.trim(), sortOrder: Number(categoryDraft.sortOrder), enabled: categoryDraft.enabled, coverAssetId: categoryDraft.coverAssetId || null, ...(!editingId ? { id: categoryDraft.id.trim() } : {}) };
+        await requestJson(editingId ? `/api/admin/categories/${encodeURIComponent(editingId)}` : "/api/admin/categories", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(body) });
+      } else {
+        if (!editingId && !presetDraft.coverAssetId) throw new Error("请先上传风格主展示图");
+        const parse = (field: string) => { try { return JSON.parse(presetDraft[field] || "{}"); } catch { throw new Error(`${catalogFieldLabels[field] ?? field}不是有效 JSON，请检查括号、引号和逗号。`); } };
+        const { coverPreview: _coverPreview, ...presetFields } = presetDraft;
+        void _coverPreview;
+        const body = { ...presetFields, id: presetDraft.id.trim(), categoryId: presetDraft.categoryId || null, coverAssetId: presetDraft.coverAssetId || null, moods: parse("moods"), workflow: parse("workflow"), prompt: presetDraft.prompt, negativePrompt: presetDraft.negativePrompt, additional: parse("additional"), nodeMapping: parse("nodeMapping"), enabled: presetDraft.enabled === "true" };
+        await requestJson(editingId ? `/api/admin/presets/${encodeURIComponent(editingId)}` : "/api/admin/presets", { method: editingId ? "PATCH" : "POST", body: JSON.stringify(body) });
+      }
+      await loadData(); setCatalogDialog(null); setNotice("目录已保存");
+    } catch (reason) { setCatalogError(reason instanceof Error ? reason.message : "保存失败，请检查输入后重试。"); }
+  }
+
+  async function savePreset(preset: AdminPreset) {
+    try { await requestJson(`/api/admin/presets/${encodeURIComponent(preset.id)}`, { method: "PATCH", body: JSON.stringify(preset) }); await loadData(); setNotice(`已保存「${preset.name}」`); }
+    catch { setError("风格设置保存失败"); }
+  }
+
+  function updatePreset(id: string, patch: Partial<AdminPreset>) { setPresets((current) => current.map((preset) => preset.id === id ? { ...preset, ...patch } : preset)); }
 
   const activeInvitationCount = invitations.filter((invitation) => !invitation.revokedAt && (!invitation.expiresAt || new Date(invitation.expiresAt) > new Date())).length;
   const activeUserCount = users.filter((user) => !user.disabledAt).length;
@@ -326,7 +397,7 @@ export default function AdminDashboard() {
     <main className="admin-main">
       <header className="admin-topbar"><button type="button" className="admin-mobile-menu" onClick={() => setMobileNavOpen(!mobileNavOpen)} aria-label="切换导航"><Menu size={21} /></button><div><span>管理后台</span><ChevronDown size={14} /><strong>{tabs.find((item) => item.id === tab)?.label}</strong></div><div className="admin-top-actions"><span className="admin-live-pill"><i />管理会话有效</span><button type="button" className="admin-logout" onClick={logout}><LogOut size={16} /><span>退出</span></button></div></header>
       <div className="admin-content">
-         <div className="admin-page-heading"><div><span className="admin-eyebrow">DREAM LAB / ADMIN</span><h1>{tabs.find((item) => item.id === tab)?.label}</h1><p>{tab === "overview" ? "管理邀请码、用户和图像预设。生成服务接入后可在此扩展运维工具。" : tab === "invites" ? "为淘宝自动发货或人工邀请签发一次性访问链接。" : tab === "users" ? "查看用户任务、上传原图、生成结果和任务参数。" : tab === "styles" ? "编辑用户可见的风格名称、描述、心情选项和补充提示。" : "ComfyUI 连接与工作流控制位于同机 worker，当前作为预留区域。"}</p></div><button type="button" className="admin-refresh" onClick={() => { void loadData(); }}><RefreshCw size={15} />刷新数据</button></div>
+         <div className="admin-page-heading"><div><span className="admin-eyebrow">DREAM LAB / ADMIN</span><h1>{tabs.find((item) => item.id === tab)?.label}</h1><p>{tab === "overview" ? "管理邀请码、用户和图像预设。生成服务接入后可在此扩展运维工具。" : tab === "invites" ? "为淘宝自动发货或人工邀请签发一次性访问链接。" : tab === "users" ? "查看用户任务、上传原图、生成结果和任务参数。" : tab === "categories" ? "管理首页展示的风格分类、封面与排序。" : tab === "presets" ? "管理分类下的风格预设及其工作流配置。" : "ComfyUI 连接与工作流控制位于同机 worker，当前作为预留区域。"}</p></div><button type="button" className="admin-refresh" onClick={() => { void loadData(); }}><RefreshCw size={15} />刷新数据</button></div>
         {notice && <div className="admin-notice"><Check size={16} />{notice}<button type="button" onClick={() => setNotice("")} aria-label="关闭提示"><X size={15} /></button></div>}
         {error && <div className="admin-error admin-global-error" role="alert"><CircleHelp size={16} />{error}<button type="button" onClick={() => setError("")} aria-label="关闭错误"><X size={15} /></button></div>}
 
@@ -340,11 +411,12 @@ export default function AdminDashboard() {
 
         {tab === "users" && <section className="admin-panel table-panel"><div className="admin-panel-heading"><span><UsersRound size={18} />用户账户</span><label className="admin-search"><Search size={15} /><input value={search} onChange={(event) => { setSearch(event.target.value); setUserPage(0); }} placeholder="搜索用户标识" /></label></div><div className="admin-table-scroll"><table className="admin-table"><thead><tr><th>用户标识</th><th>创建时间</th><th>邀请码</th><th>任务数</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((user) => <Fragment key={user.id}><tr><td><b>{user.id}</b></td><td>{formatDate(user.createdAt)}</td><td>{user.invitationCount}<button type="button" className="table-action" onClick={() => { void toggleUserInvitations(user); }}>{expandedUserId === user.id ? "收起" : "查看"}</button></td><td>{user.jobCount}<button type="button" className="table-action" onClick={() => { void toggleUserJobs(user); }}>{expandedJobsUserId === user.id ? "收起" : "查看"}</button>{false && expandedJobsUserId === user.id && <div className="user-job-list">{loadingUserJobs === user.id ? <div className="admin-panel-empty">正在读取任务和图片…</div> : (userJobs[user.id] ?? []).length ? (userJobs[user.id] ?? []).map((job) => <article className="admin-user-job" key={job.id}><div className="admin-user-job-heading"><b>{job.presetId} · V{job.presetVersion}</b><span>{job.status}{job.phase ? ` · ${job.phase}` : ""} · 尝试 {job.attempts} 次</span></div><div className="admin-user-job-meta"><span>任务 {job.id}</span><span>创建 {formatDate(job.createdAt)}</span><span>完成 {formatDate(job.finishedAt)}</span><span>心情 {job.parameters.mood ?? "—"}</span>{job.parameters.note && <span>备注 {job.parameters.note}</span>}{job.errorCode && <span className="danger-text">错误 {job.errorCode}</span>}</div><div className="admin-job-images"><a href={job.input.url} target="_blank" rel="noreferrer"><Image src={job.input.url} alt="用户上传原图" width={360} height={300} unoptimized /><span>上传原图 · {job.input.contentType} · {(job.input.size / 1024 / 1024).toFixed(2)} MB</span></a>{job.outputs.map((output) => <a href={output.url} target="_blank" rel="noreferrer" key={output.index}><Image src={output.url} alt={`生成结果 ${output.index + 1}`} width={360} height={300} unoptimized /><span>生成结果 {output.index + 1} · {output.contentType} · {(output.size / 1024 / 1024).toFixed(2)} MB</span></a>)}{!job.outputs.length && <span className="admin-panel-empty">暂无生成结果</span>}</div></article>) : <div className="admin-panel-empty">该用户还没有任务</div>}</div>}</td><td><span className={`admin-status ${user.disabledAt ? "is-used" : "is-ready"}`}>{user.disabledAt ? "已停用" : "可访问"}</span></td><td><button type="button" className={`table-action ${user.disabledAt ? "" : "danger-action"}`} onClick={() => { void setUserDisabled(user); }}>{user.disabledAt ? "启用" : "停用"}</button></td></tr>{expandedJobsUserId === user.id && <tr key={`${user.id}-jobs`} className="user-detail-row"><td colSpan={6}><div className="user-job-list">{loadingUserJobs === user.id ? <div className="admin-panel-empty">正在读取任务和图片…</div> : (userJobs[user.id] ?? []).length ? (userJobs[user.id] ?? []).map((job) => <article className="admin-user-job" key={job.id}><div className="admin-user-job-heading"><b>{job.presetId} · V{job.presetVersion}</b><span>{job.status}{job.phase ? ` · ${job.phase}` : ""} · 尝试 {job.attempts} 次</span></div><div className="admin-user-job-meta"><span>任务 {job.id}</span><span>创建 {formatDate(job.createdAt)}</span><span>完成 {formatDate(job.finishedAt)}</span><span>心情 {job.parameters.mood ?? "—"}</span>{job.parameters.note && <span>备注 {job.parameters.note}</span>}{job.errorCode && <span className="danger-text">错误 {job.errorCode}</span>}</div><div className="admin-job-images"><a href={job.input.url} target="_blank" rel="noreferrer"><Image src={job.input.url} alt="用户上传原图" width={360} height={300} unoptimized /><span>上传原图 · {job.input.contentType} · {(job.input.size / 1024 / 1024).toFixed(2)} MB</span></a>{job.outputs.map((output) => <a href={output.url} target="_blank" rel="noreferrer" key={output.index}><Image src={output.url} alt={`生成结果 ${output.index + 1}`} width={360} height={300} unoptimized /><span>生成结果 {output.index + 1} · {output.contentType} · {(output.size / 1024 / 1024).toFixed(2)} MB</span></a>)}{!job.outputs.length && <span className="admin-panel-empty">暂无生成结果</span>}</div></article>) : <div className="admin-panel-empty">该用户还没有任务</div>}</div></td></tr>}{expandedUserId === user.id && <tr key={`${user.id}-invites`} className="user-detail-row"><td colSpan={6}><div className="user-invitation-list">{loadingUserInvitations === user.id ? <div className="admin-panel-empty">正在读取邀请凭证…</div> : (userInvitations[user.id] ?? []).length ? (userInvitations[user.id] ?? []).map((invite) => <div className="user-invitation-item" key={invite.id}><div className="user-invitation-info"><b>{invite.issueSource ?? "人工批次"} · {invite.batchId}</b><span>{invite.revokedAt ? "已撤销" : invite.expiresAt && new Date(invite.expiresAt) <= new Date() ? "已过期" : invite.redeemedAt ? "已登录过 · 仍可用" : "可登录"} · 首次登录 {formatDate(invite.redeemedAt)}</span></div>{invite.inviteCode && invite.inviteUrl ? <div className="user-invitation-secret"><code>{invite.inviteCode}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(invite.inviteCode!); setNotice("邀请码已复制"); }}><Copy size={14} />复制</button><button type="button" onClick={() => { void navigator.clipboard.writeText(invite.inviteUrl!); setNotice("登录链接已复制"); }}><ExternalLink size={14} />复制链接</button></div> : <div className="user-invitation-unavailable">{invite.unavailableReason === "hash_only" ? "此邀请由旧版 CLI 导入，数据库仅保存摘要，无法还原明文；可使用原 seed 重建，或重新签发。" : invite.unavailableReason === "revoked" ? "此邀请已撤销。" : "此邀请已过期。"}</div>}</div>) : <div className="admin-panel-empty">该用户暂无邀请记录</div>}</div></td></tr>}</Fragment>)}</tbody></table>{!users.length && <div className="admin-panel-empty">未找到用户</div>}</div><div className="admin-pagination"><span>共 {userTotal} 位用户 · 第 {userPage + 1} / {Math.max(1, Math.ceil(userTotal / 20))} 页</span><div><button type="button" disabled={userPage === 0} onClick={() => setUserPage((page) => Math.max(0, page - 1))}>上一页</button><button type="button" disabled={(userPage + 1) * 20 >= userTotal} onClick={() => setUserPage((page) => page + 1)}>下一页</button></div></div></section>}
 
-        {tab === "styles" && <section className="admin-style-grid">{presets.map((preset) => <article className="admin-panel style-editor" key={preset.id}><div className="style-editor-heading"><div className="style-preview-swatch" style={{ backgroundColor: preset.tint, backgroundImage: `url(${preset.image})` }} /><div><span className="admin-eyebrow">{preset.id} · V{preset.version}</span><h2>{preset.name}</h2><label className="admin-toggle"><input type="checkbox" checked={preset.enabled} onChange={(event) => updatePreset(preset.id, { enabled: event.target.checked })} /><span />{preset.enabled ? "已启用" : "已停用"}</label></div></div><div className="style-fields"><label>风格名称<input value={preset.name} onChange={(event) => updatePreset(preset.id, { name: event.target.value })} maxLength={100} /></label><label>英文副标题<input value={preset.subtitle} onChange={(event) => updatePreset(preset.id, { subtitle: event.target.value })} maxLength={100} /></label><label>简短介绍<textarea value={preset.description} onChange={(event) => updatePreset(preset.id, { description: event.target.value })} maxLength={500} rows={2} /></label><label>提示字段标签<input value={preset.promptLabel} onChange={(event) => updatePreset(preset.id, { promptLabel: event.target.value })} maxLength={100} /></label><label>提示字段占位文案<input value={preset.promptPlaceholder} onChange={(event) => updatePreset(preset.id, { promptPlaceholder: event.target.value })} maxLength={200} /></label><label>心情选项 <small>以逗号分隔，至少一个</small><input value={preset.moods.join("，")} onChange={(event) => updatePreset(preset.id, { moods: event.target.value.split(/[，,]/).map((value) => value.trim()).filter(Boolean) })} /></label><div className="color-fields"><label>底色<input type="color" value={preset.tint} onChange={(event) => updatePreset(preset.id, { tint: event.target.value })} /></label><label>强调色<input type="color" value={preset.accent} onChange={(event) => updatePreset(preset.id, { accent: event.target.value })} /></label></div></div><div className="style-editor-footer"><span>workflow 映射待 ComfyUI 配置后接入</span><button type="button" className="admin-primary-button" onClick={() => { void savePreset(preset); }}><Check size={15} />保存风格</button></div></article>)}</section>}
+        {(tab === "categories" || tab === "presets") && <><section className={`catalog-admin ${tab === "categories" ? "categories-page" : "presets-page"}`}><div className="admin-panel catalog-panel"><div className="admin-panel-heading"><span><Paintbrush2 size={18} />分类目录</span><button type="button" className="admin-primary-button" onClick={() => openCategory()}><Plus size={15} />新建分类</button></div>{categories.map((category) => <div className="catalog-row" key={category.id}><span className="catalog-thumb" style={{ backgroundImage: category.image ? `url(${category.image})` : undefined }} /><div className="catalog-row-copy"><strong>{category.name}</strong><small>{category.id} · 顺序 {category.sortOrder}</small></div><span className={`catalog-status ${category.enabled ? "" : "is-disabled"}`}>{category.enabled ? "已启用" : "已停用"}</span><button type="button" className="table-action" onClick={() => openCategory(category)}>编辑</button></div>)}{!categories.length && <div className="admin-panel-empty">还没有分类</div>}</div><div className="admin-panel catalog-panel"><div className="admin-panel-heading"><span><Sparkles size={18} />预设目录</span><button type="button" className="admin-primary-button" onClick={() => openPreset()}><Plus size={15} />新建预设</button></div>{presets.map((preset) => <div className="catalog-row" key={preset.id}><span className="catalog-thumb" style={{ backgroundColor: preset.tint, backgroundImage: `url(${preset.coverImage ?? preset.image})` }} /><div className="catalog-row-copy"><strong>{preset.name}</strong><small>{preset.id} · {categories.find((item) => item.id === preset.categoryId)?.name ?? "未分类"}</small></div><span className={`catalog-status ${preset.enabled ? "" : "is-disabled"}`}>{preset.enabled ? "已启用" : "已停用"}</span><button type="button" className="table-action" onClick={() => openPreset(preset)}>编辑</button></div>)}</div></section>{presets.map((preset) => <article className="admin-panel style-editor" key={preset.id}><div className="style-editor-heading"><div className="style-preview-swatch" style={{ backgroundColor: preset.tint, backgroundImage: `url(${preset.image})` }} /><div><span className="admin-eyebrow">{preset.id} · V{preset.version}</span><h2>{preset.name}</h2><label className="admin-toggle"><input type="checkbox" checked={preset.enabled} onChange={(event) => updatePreset(preset.id, { enabled: event.target.checked })} /><span />{preset.enabled ? "已启用" : "已停用"}</label></div></div><div className="style-fields"><label>风格名称<input value={preset.name} onChange={(event) => updatePreset(preset.id, { name: event.target.value })} maxLength={100} /></label><label>英文副标题<input value={preset.subtitle} onChange={(event) => updatePreset(preset.id, { subtitle: event.target.value })} maxLength={100} /></label><label>简短介绍<textarea value={preset.description} onChange={(event) => updatePreset(preset.id, { description: event.target.value })} maxLength={500} rows={2} /></label><label>提示字段标签<input value={preset.promptLabel} onChange={(event) => updatePreset(preset.id, { promptLabel: event.target.value })} maxLength={100} /></label><label>提示字段占位文案<input value={preset.promptPlaceholder} onChange={(event) => updatePreset(preset.id, { promptPlaceholder: event.target.value })} maxLength={200} /></label><label>心情选项 <small>以逗号分隔，至少一个</small><input value={preset.moods.join("，")} onChange={(event) => updatePreset(preset.id, { moods: event.target.value.split(/[，,]/).map((value) => value.trim()).filter(Boolean) })} /></label><div className="color-fields"><label>底色<input type="color" value={preset.tint} onChange={(event) => updatePreset(preset.id, { tint: event.target.value })} /></label><label>强调色<input type="color" value={preset.accent} onChange={(event) => updatePreset(preset.id, { accent: event.target.value })} /></label></div></div><div className="style-editor-footer"><span>workflow 映射待 ComfyUI 配置后接入</span><button type="button" className="admin-primary-button" onClick={() => { void savePreset(preset); }}><Check size={15} />保存风格</button></div></article>)}</>}
 
         {tab === "comfyui" && <section className="admin-comfy-page"><article className="admin-panel comfy-reserved"><div className="comfy-reserved-icon"><Server size={35} /></div><span className="pending-chip">COMFYUI WORKER 未接入</span><h2>本地生成服务，<br />正在等待工作流。</h2><p>ComfyUI 与 worker 在本地同机运行。后台不会直接访问 ComfyUI，也不会将端口暴露到公网。提供 API 格式 workflow JSON 后，再接入 worker 心跳、任务队列和服务健康状态。</p><div className="comfy-checklist"><span><Check size={15} />本地 worker 接口边界已设计</span><span><Clock3 size={15} />等待 API 格式 workflow JSON</span><span><Clock3 size={15} />等待 ComfyUI 节点与模型映射</span></div></article><article className="admin-panel comfy-security"><ShieldCheck size={21} /><b>安全边界</b><p>未来由同机 worker 主动轮询服务端任务，再访问 `127.0.0.1:8188`。请勿将 ComfyUI 服务端口映射到公网。</p></article></section>}
       </div>
     </main>
+    {catalogDialog && <div className="admin-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCatalogDialog(null); }}><section className="admin-user-dialog catalog-dialog" role="dialog" aria-modal="true"><header><div><span className="admin-eyebrow">CATALOG</span><h2>{catalogDialog === "category" ? `${editingId ? "编辑" : "新建"}分类` : `${editingId ? "编辑" : "新建"}预设`}</h2></div><button type="button" onClick={() => setCatalogDialog(null)} aria-label="关闭弹窗"><X size={20} /></button></header><form className="catalog-form" onSubmit={saveCatalog}>{catalogDialog === "category" ? <><label>分类 ID<input required disabled={!!editingId} value={categoryDraft.id} onChange={(event) => setCategoryDraft({ ...categoryDraft, id: event.target.value })} /></label><label>名称<input required value={categoryDraft.name} onChange={(event) => setCategoryDraft({ ...categoryDraft, name: event.target.value })} /></label><label>排序<input type="number" value={categoryDraft.sortOrder} onChange={(event) => setCategoryDraft({ ...categoryDraft, sortOrder: event.target.value })} /></label><label className="catalog-checkbox"><input type="checkbox" checked={categoryDraft.enabled} onChange={(event) => setCategoryDraft({ ...categoryDraft, enabled: event.target.checked })} />启用分类</label><label className="catalog-upload">分类封面<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploadingCover} onChange={(event) => { void uploadCover(event.target.files?.[0], "category"); event.currentTarget.value = ""; }} /></label>{categoryDraft.image && <div className="catalog-cover-preview" style={{ backgroundImage: `url(${categoryDraft.image})` }} role="img" aria-label="分类封面预览" />}</> : <><div className="catalog-form-grid">{(["id", "name", "subtitle", "description", "categoryId", "image", "tint", "accent", "tag", "promptLabel", "promptPlaceholder"] as const).filter((field) => field !== "image").map((field) => <label key={field}>{catalogFieldLabels[field]}{field === "categoryId" ? <select value={presetDraft[field]} onChange={(event) => setPresetDraft({ ...presetDraft, [field]: event.target.value })}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select> : <input disabled={field === "id" && !!editingId} value={presetDraft[field]} onChange={(event) => setPresetDraft({ ...presetDraft, [field]: event.target.value })} />}</label>)}</div><label>{catalogFieldLabels.moods}<textarea rows={3} value={presetDraft.moods} onChange={(event) => setPresetDraft({ ...presetDraft, moods: event.target.value })} /></label>{(["workflow", "additional", "nodeMapping"] as const).map((field) => <label key={field}>{catalogFieldLabels[field]}<textarea className="catalog-json" rows={5} spellCheck={false} value={presetDraft[field]} onChange={(event) => setPresetDraft({ ...presetDraft, [field]: event.target.value })} /></label>)}{(["prompt", "negativePrompt"] as const).map((field) => <label key={field}>{catalogFieldLabels[field]}<textarea rows={5} value={presetDraft[field]} onChange={(event) => setPresetDraft({ ...presetDraft, [field]: event.target.value })} /></label>)}<label>上传风格主展示图<input type="file" accept="image/jpeg,image/png,image/webp" disabled={uploadingCover} onChange={(event) => { void uploadCover(event.target.files?.[0]); event.currentTarget.value = ""; }} />{uploadingCover && <small>正在上传…</small>}</label>{presetDraft.coverAssetId && <div className="catalog-cover-preview" style={{ backgroundImage: `url(${presetDraft.coverPreview || ""})` }} role="img" aria-label="预设封面预览" />}<label className="catalog-checkbox"><input type="checkbox" checked={presetDraft.enabled === "true"} onChange={(event) => setPresetDraft({ ...presetDraft, enabled: String(event.target.checked) })} />启用预设</label></>}{catalogError && <div className="admin-error" role="alert">{catalogError}</div>}<div className="catalog-form-actions"><button className="admin-secondary-button" type="button" onClick={() => setCatalogDialog(null)}>取消</button><button className="admin-primary-button" type="submit" disabled={uploadingCover}><Check size={15} />保存</button></div></form></section></div>}
     {dialogUser && <div className="admin-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setExpandedUserId(null); setExpandedJobsUserId(null); } }}><section className="admin-user-dialog" role="dialog" aria-modal="true" aria-labelledby="user-dialog-title"><header><div><span className="admin-eyebrow">USER / {dialogUser.id}</span><h2 id="user-dialog-title">{userDialogType === "jobs" ? "任务记录" : "邀请码记录"}</h2></div><button type="button" onClick={() => { setExpandedUserId(null); setExpandedJobsUserId(null); }} aria-label="关闭弹窗"><X size={20} /></button></header>{userDialogType === "jobs" ? loadingUserJobs === dialogUser.id ? <div className="admin-panel-empty">正在读取任务和图片…</div> : (userJobs[dialogUser.id] ?? []).length ? <div className="user-job-list">{userJobs[dialogUser.id].map((job) => <article className="admin-user-job" key={job.id}><div className="admin-user-job-heading"><b>{job.presetId} · V{job.presetVersion}</b><span>{job.status}{job.phase ? ` · ${job.phase}` : ""} · 尝试 {job.attempts} 次</span></div><div className="admin-user-job-meta"><span>任务 {job.id}</span><span>创建 {formatDate(job.createdAt)}</span><span>完成 {formatDate(job.finishedAt)}</span><span>心情 {job.parameters.mood ?? "—"}</span>{job.parameters.note && <span>备注 {job.parameters.note}</span>}{job.errorCode && <span className="danger-text">错误 {job.errorCode}</span>}</div><div className="admin-job-images"><a href={job.input.url} target="_blank" rel="noreferrer"><Image src={job.input.url} alt="用户上传原图" width={360} height={300} unoptimized /><span>上传原图 · {job.input.contentType} · {(job.input.size / 1024 / 1024).toFixed(2)} MB</span></a>{job.outputs.map((output) => <a href={output.url} target="_blank" rel="noreferrer" key={output.index}><Image src={output.url} alt={`生成结果 ${output.index + 1}`} width={360} height={300} unoptimized /><span>生成结果 {output.index + 1} · {output.contentType} · {(output.size / 1024 / 1024).toFixed(2)} MB</span></a>)}{!job.outputs.length && <span className="admin-panel-empty">暂无生成结果</span>}</div></article>)}</div> : <div className="admin-panel-empty">该用户还没有任务</div> : loadingUserInvitations === dialogUser.id ? <div className="admin-panel-empty">正在读取邀请码…</div> : (userInvitations[dialogUser.id] ?? []).length ? <div className="user-invitation-list">{userInvitations[dialogUser.id].map((invite) => <div className="user-invitation-item" key={invite.id}><div className="user-invitation-info"><b>{invite.issueSource ?? "人工批次"} · {invite.batchId}</b><span>{invite.revokedAt ? "已撤销" : invite.expiresAt && new Date(invite.expiresAt) <= new Date() ? "已过期" : invite.redeemedAt ? "已登录过 · 仍可用" : "可登录"} · 首次登录 {formatDate(invite.redeemedAt)}</span></div>{invite.inviteCode && invite.inviteUrl ? <div className="user-invitation-secret"><code>{invite.inviteCode}</code><button type="button" onClick={() => { void navigator.clipboard.writeText(invite.inviteCode!); setNotice("邀请码已复制"); }}><Copy size={14} />复制</button><button type="button" onClick={() => { void navigator.clipboard.writeText(invite.inviteUrl!); setNotice("登录链接已复制"); }}><ExternalLink size={14} />复制链接</button><button type="button" className="danger-action" disabled={busy} onClick={() => { void revokeInvitation(invite); }}>撤销</button></div> : <span className="user-invitation-unavailable">{invite.unavailableReason === "hash_only" ? "仅保存摘要，无法恢复明文凭证" : invite.unavailableReason === "revoked" ? "此邀请已撤销" : "此邀请已过期"}</span>}</div>)}</div> : <div className="admin-panel-empty">该用户暂无邀请码记录</div>}</section></div>}
   </div>;
 }
