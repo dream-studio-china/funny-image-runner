@@ -8,7 +8,7 @@
 | --- | --- |
 | [总体设计](./high-level-design.md) | 目标、架构、数据流、跨组件约束 |
 | [身份与邀请码](./low-level-identity.md) | seed 发码、兑换、会话、管理员/worker 鉴权 |
-| [预设与工作流](./low-level-presets.md) | 预设契约、表单验证、ComfyUI 节点映射 |
+| [分类、风格与工作流](./low-level-presets.md) | 分类与版本模型、后台弹窗、公开筛选、私有 JSON 与节点映射 |
 | [图片存储](./low-level-storage.md) | 七牛直传、私有对象、下载与保留策略 |
 | [任务与 API](./low-level-jobs.md) | 数据表、HTTP 接口、租约与状态机 |
 | [本地 worker](./low-level-worker.md) | 领取任务、ComfyUI 调用、恢复与结果上报 |
@@ -21,10 +21,11 @@
 - ComfyUI 与常驻 worker 在同一台本地机器；Tailscale 用于对该机器的受限远程访问，不作为 Vercel 到 ComfyUI 的必经链路。
 - 持久化使用阿里云 RDS MySQL，应用层采用 Drizzle ORM + mysql2。
 - 邀请制；淘宝自动发货通过管理员 API 幂等签发可重复登录的邀请链接（直到过期或撤销），用户标识可由服务端根据稳定 customerRef 派生。人工/批量补发也支持本地私有 seed CLI。
-- `/admin` 管理后台已实现管理员会话、邀请码签发/撤销、用户启停和现有预设字段编辑；ComfyUI 管理项仍是预留面板。
+- `/admin` 管理后台已实现管理员会话、邀请码签发/撤销、用户启停和现有预设公开字段编辑；分类/风格弹窗管理、主展示图上传及管理员手动配置的 API workflow JSON、prompt、negative prompt 和固定 additional JSON 为下一阶段目标。ComfyUI 管理项仍是预留面板。
 - 登录用户可直传七牛并创建真实队列任务；任务接口和用户任务列表已接入 MySQL，实际生成仍待本地 worker。
-- 目前只有 ComfyUI 界面工作流；真正接入前需要导出 API 格式 JSON 并确认节点映射。
+- 分类将显示在首页供用户筛选风格；管理员为分类与风格上传展示图并维护风格的不可变工作流版本。用户端不接收或调整私有 workflow/固定 additional JSON。
+- 目前只有 ComfyUI 界面工作流；真正接入前需要导出 API 格式 JSON，由管理员在风格弹窗手动配置，并确认节点映射。
 
 ## 尚待提供的接入材料
 
-部署时须填入实际七牛区域上传 endpoint、bucket 和 HTTPS 私有下载域名；管理员环境还需设置登录后台和自动发码所需密钥。真正接入生成前仍需导出 ComfyUI API 格式 workflow JSON，确认输入/输出节点、模型和自定义节点依赖，并实现及部署常驻 worker。具体资费和资源配额由部署时选定；本文中的阈值标为“首版默认值”时可通过配置调整。
+部署时须填入实际七牛区域上传 endpoint、bucket 和 HTTPS 私有下载域名；管理员环境还需设置登录后台和自动发码所需密钥。真正接入生成前仍需导出 ComfyUI API 格式 workflow JSON，确认输入/输出节点、正负提示词映射、模型和自定义节点依赖，并实现及部署常驻 worker。具体资费和资源配额由部署时选定；本文中的阈值标为“首版默认值”时可通过配置调整。

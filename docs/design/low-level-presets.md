@@ -1,40 +1,44 @@
-# 详细设计：预设与 ComfyUI 工作流
+# 详细设计：分类、风格与 ComfyUI 工作流
 
-关联：[总体设计](./high-level-design.md) · [任务 API](./low-level-jobs.md) · [本地 worker](./low-level-worker.md)
+关联：[总体设计](./high-level-design.md) · [图片存储](./low-level-storage.md) · [任务 API](./low-level-jobs.md) · [本地 worker](./low-level-worker.md)
 
-## 预设契约
+> **状态：目标设计。** 当前只支持内置风格首次入库、管理员编辑已有风格的公开字段；分类、后台新建风格、封面上传与 workflow 配置尚未实现。worker 及真实生成也尚未实现。
 
-预设是存储在 MySQL、由管理员后台维护的版本化定义；首次读取时从内置公开默认值初始化，浏览器只能看到启用预设的公开元数据。管理员可修改名称、简介、心情选项、补充提示、主题颜色和启用状态；已保存字段递增 `version`。目前控制台只能编辑已有预设的公开字段，不能新建/删除预设或编辑 workflow 映射。一个预设包含 `id`、`version`、名称、简介、是否可用、允许的补充字段及校验约束（长度、枚举、必填、默认值）；worker 私有定义另外包含 API workflow JSON、输入图像节点和输出图像节点 ID、固定参数及公开字段到节点输入的映射。
+## 数据模型与迁移
 
-公开预设字段由云端 MySQL API 提供；worker 以相同 `id@version` 注册私有 workflow 映射。发布前使用共享清单/类型约束检查两侧的 `id@version` 与字段定义一致；云端任务记录固定版本，worker 只执行已支持的版本，未知版本不得降级到另一个 workflow。禁用预设不影响已创建任务的历史版本；旧版本工作流需保留到未完成任务清空。
+- `preset_categories`：不可复用的稳定 `id`（slug/UUID）、名称、简介、封面图片资产 ID、排序值、`enabled`、创建/更新时间。分类仅由管理员维护；同一分类下可有多个风格。
+- `presets`：保留现有 `id`、`version` 与公开展示字段，新增必填 `category_id` 外键、封面图片资产 ID；保留现有 `/art/*.svg` 路径作为迁移后仍可显示的旧封面。新建风格须选择有效分类，不能引用不存在的分类或伪造图片地址。
+- `preset_versions`：以 `(preset_id, version)` 唯一存储**不可变**的版本快照，包括创建任务所需的心情选项/参数校验规则，以及管理员维护的 API 格式 workflow JSON、正向 prompt、negative prompt、additional JSON、输入图/文本节点映射和输出节点 ID。风格当前行保存最新版本号和当前展示字段；历史版本不能原地覆盖。
+- `display_images`：管理员上传的图片元数据（`id`、私有七牛 `object_key`、MIME、大小、创建时间及状态）。分类与风格只保存已核验的资产 ID，不保存签名 URL；一个资产可被引用时不能作为过期孤儿清理。
 
-示意定义（节点 ID 仅为示例，接入时须根据实际 API 导出替换）：
+迁移顺序：创建分类、版本及展示图表；建立一个默认分类并将现有四个风格归入其中；从已有风格行回填当前版本快照，旧版没有 workflow 时明确标为**未配置**，不能伪造可执行工作流；再将 `category_id` 设为非空。不得修改已有风格 ID、历史任务的 `preset_id@version` 或用户选择记录。未配置 workflow 的旧版本任务在未来 worker 接入时须报告可诊断的缺失配置，不得自动使用新版本运行。
 
-```ts
-type PublicPreset = {
-  id: string; version: number; name: string; enabled: boolean;
-  fields: Array<{ key: string; kind: 'text' | 'enum'; required: boolean;
-    maxLength?: number; options?: string[] }>;
-};
-type WorkerPreset = {
-  public: PublicPreset;
-  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>;
-  imageInput: { nodeId: string; inputName: 'image' };
-  outputNodeIds: string[];
-  fieldMappings: Record<string, { nodeId: string; inputName: string }>;
-};
-```
+不提供删除已有分类/风格的首版操作：可停用；若分类已有关联风格，不可删除或改写历史引用。分类停用时旗下风格不再对用户开放，但历史任务仍可查看；后台保留两者的完整记录。可编辑排序和分类归属，风格归属变更只影响公开展示，不改变历史任务参数与 workflow 快照。
 
-## 生成时验证
+## 管理后台交互及 API
 
-`GET /api/presets` 仅返回启用预设公开字段。管理员在 `/admin` 编辑现有预设时，服务端白名单校验并递增版本；`POST /api/jobs` 服务端按当前公开 schema 校验并规范化用户值，拒绝未知字段、超长文本、非法选项或被禁用预设；在任务中持久化 `preset_id`、`preset_version` 和规范化参数。用户不能提交 workflow JSON、节点 ID、模型路径或任意 ComfyUI 参数。worker 收到任务后再次校验版本与字段，在**每次任务**中深拷贝原始 workflow，先设置已经上传至 ComfyUI 的输入文件名，再将经过校验的字段写到映射节点；不复用已经改写过的对象。
+「风格配置」分为分类列表与风格列表。分类、风格均通过弹窗创建/修改；列表显示封面、所属关系、启用状态和操作入口。风格弹窗包含公开字段（名称、副标题、简介、心情选项、提示文案、颜色等）、分类、封面，以及私有字段：
 
-## 工作流准备与检查
+- **Workflow**：管理员粘贴 ComfyUI **API 格式** JSON（节点 ID → `{class_type, inputs}`），不是 ComfyUI UI 导出的带节点坐标的 JSON。提供 JSON 格式错误定位；校验非空时为对象、节点数和体积有上限、每个节点结构符合预期。
+- **正向/负向 prompt**：固定文本模板；单独填写并指定各自的目标节点 ID 和字符串输入名。输入图也指定目标节点和输入名（例如 `LoadImage.inputs.image`），输出明确列出 `SaveImage` 等最终节点 ID。保存时检查引用的节点和输入名存在；模型、自定义节点依赖由 worker 启动/执行前再检查。
+- **Additional JSON**：管理员填写 JSON 对象，服务端限制深度、大小和允许的 JSON 值；其键值作为该版本的固定配置由 worker 使用，不由浏览器提交或修改。若需要修改 workflow 节点输入，显式记录允许的目标节点/输入映射，禁止用任意路径覆盖输入文件名、模型文件路径或内部执行配置。
 
-目前只有界面工作流。先从 ComfyUI 导出 **API 格式** JSON，记录对应的 ComfyUI 版本、自定义节点及模型；以真实输入图片手工调用 `/upload/image`、`/prompt`、`/history/{prompt_id}`、`/view`，确认输入图节点、所有用户可变字段与最终 SaveImage 输出节点。启动 worker 时检查每个指定节点和输入名存在、输出节点类型及依赖满足；缺失时将该预设标记为不可领取并报告部署错误，而不是将错误 workflow 发给 ComfyUI。
+写接口示意：`GET/POST /api/admin/categories`、`PATCH /api/admin/categories/{id}`；`GET/POST /api/admin/presets`、`PATCH /api/admin/presets/{id}`；展示图通过独立的管理员上传凭证与确认接口（见[存储设计](./low-level-storage.md)）。所有写请求要求有效管理员会话并校验同源，服务端逐字段校验，不能以整个 JSON 请求直接覆盖数据库行。创建风格版本从 1 起；编辑影响生成的配置或公开参数时，在事务中写入新的 `preset_versions` 快照并递增 `version`，审计记录变更；无变化的提交不必递增。失败时不得产生半写入的版本或失效封面引用。
 
-为避免脚本/模板注入，附加文本只能写入明确允许的字符串输入，不拼接文件路径或节点配置。即使用户填入任意文本，也由运行模型自身处理；预设层仅保证参数边界、长度和节点映射正确。
+如果管理员暂未填 workflow，可以保存草稿风格，但**不可作为可创建真实任务的启用风格**。现有内置风格及其演示流程在升级时仍可展示；进入真实生成前必须补齐可执行的 workflow/映射并发布新版本。分类和风格的启停分别控制首页可见性，不影响先前排队任务对历史版本的读取。
+
+## 用户侧公开契约
+
+`GET /api/presets` 返回启用分类、其启用风格及**公开**字段，分类和风格含可展示封面链接；`categoryId` 随风格返回。前台展示分类封面及名称，选中分类后仅显示所属风格；切换分类时，若此前选择的风格不在该分类，应自动选中当前分类中的第一个可用风格并重置心情。没有可用风格的分类不展示可选入口。首次迁移的内置 SVG 可继续作为展示回退，不再限制管理员新封面为 `/art/*.svg`。
+
+公开响应及页面代码绝不包含 workflow JSON、prompt、negative prompt、additional JSON、节点映射、七牛对象 key 或管理员凭证。私有封面链接有有效期；在用户长时间停留页面后应重新向公开 API 获取新链接，避免失效缩略图。预设启停及分类归属只影响后续选择，不剥夺已有任务的归属与历史结果。对于未配置 workflow 的可见演示风格，真实任务创建必须拒绝不可执行版本，并在界面说明。
+
+## 生成与版本约束
+
+`POST /api/jobs` 只接受 `uploadId`、启用的风格 ID、已公布的白名单参数（目前为 `mood`、最多 120 字的 `note`）及幂等键；不接受客户端传入的 workflow、prompt、additional 参数、分类 ID 或七牛 URL。服务端使用事务内的当前版本与字段约束校验后，将 `preset_id@version` 和规范化用户参数固定到任务；后续管理员编辑不能改变排队任务的执行配置。
+
+未来 worker 通过受保护的 worker API 按任务的 `preset_id@version` 读取**确切的历史配置**；不能改用风格最新版本。每次任务深拷贝 workflow，写入已上传到 ComfyUI 的输入文件名和经过验证的用户字段，并应用该版本受控的 prompt/negative prompt/additional 映射；不允许客户端文本直接插入模型路径、文件名或 JSON 结构。worker 对节点类型、输入名、模型及自定义节点依赖做运行前校验；缺失版本或无效映射报明确错误，不降级或静默换 workflow。管理员保存 JSON 不等于已接入或已验证真实 ComfyUI 执行。
 
 ## 验收条件
 
-未知/禁用版本不能产生任务；多任务不会互相污染 workflow；错误节点映射在启动或预设验证阶段可定位；一个预设的输出只读取声明的输出节点，不把预览图误当成最终结果。
+迁移后四个旧风格和既有任务仍可查看；管理员能创建/编辑分类与风格、上传并更换封面、收到有用的 JSON 校验错误；普通用户只看到启用分类与风格且筛选正确；无权用户无法读私有配置/原始对象 key。一个任务入队后修改风格，worker 仍能按旧版本读取原配置；未知/未配置的版本不得借用新 workflow 生成。

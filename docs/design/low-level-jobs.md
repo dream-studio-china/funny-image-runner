@@ -11,8 +11,9 @@
 | `uploads` | `id UUID PK`, `user_id FK`, `object_key UNIQUE`, `content_type`, `declared_size`, `expires_at`, `consumed_job_id UNIQUE NULL`, `created_at`；索引 `(user_id, created_at DESC)` |
 | `jobs` | `id CHAR(36) PK`, `user_id FK`, `upload_id FK UNIQUE`, `idempotency_key CHAR(36)`, `request_hash`, `preset_id`, `preset_version`, `parameters JSON`, `status`, `phase`, `attempts`, `lease_token_hash`, `lease_until`, `prompt_id CHAR(36) UNIQUE NULL`, `error_code`, `created_at`, `updated_at`, `finished_at`；唯一索引 `(user_id, idempotency_key)`，另有 `(user_id, created_at)` 和待领任务 `(status, lease_until, created_at)` |
 | `job_outputs` | `job_id FK`, `index INT`, `object_key UNIQUE`, `content_type`, `size`；主键 `(job_id, index)` |
+| `preset_categories` / `presets` / `preset_versions` | 分类归属、当前公开展示字段、历史版本私有执行快照；详见[分类与风格设计](./low-level-presets.md) |
 
-身份表定义见 [身份设计](./low-level-identity.md)。任务中的参数是快照，保留对应的 `preset_version`；变更预设不能默默改写排队中的任务。限制参数 JSON 体积和字段数量。云端只保存必要的对象 key，不把签名 URL、七牛凭证或工作流 JSON 写进数据库。
+身份表定义见 [身份设计](./low-level-identity.md)。任务中的参数是快照，保留对应的 `preset_version`；版本表单独保存管理员配置的**不可变** workflow 快照，任务行不重复存储 workflow JSON。变更预设不能默默改写排队中的任务。限制用户参数 JSON 体积和字段数量。任务行只保存必要的对象引用，不保存签名 URL 或七牛凭证；版本表中的工作流/提示词属于私有配置，不返回用户 API。
 
 ## 状态机
 
@@ -31,14 +32,14 @@ running.phase = claimed | input_ready | prompt_submitting |
 
 | 路由 | 行为 |
 | --- | --- |
-| `GET /api/presets` | 返回可用预设的公开字段与版本 |
+| `GET /api/presets` | 返回启用的分类、分类封面，以及各分类下可用风格的公开字段、展示图链接与版本；不返回 worker 配置 |
 | `POST /api/uploads` | 签发直传凭证并建立上传占位，细节见存储设计 |
 | `POST /api/jobs` | `{uploadId, presetId, parameters, idempotencyKey}`；鉴权、校验预设/用户限额/七牛对象，原子消费上传并创建任务；返回 201 `{id,status}`，同一用户同一键的原请求重复提交返回原任务，参数冲突返回 409 |
 | `GET /api/jobs?limit=20` | 仅列当前用户最近任务，`limit` 最大 50；不返回内部租约或七牛对象 key |
 | `GET /api/jobs/{id}` | 仅当前用户；返回 `{id,presetId,status,createdAt,finishedAt,errorCode?}`，失败只暴露安全的错误码 |
 | `GET /api/jobs/{id}/result` | 仅成功且属于本人时返回短期结果签名 URL（多图则为数组） |
 
-`idempotencyKey` 是浏览器对一次“点击生成”生成的 UUID，并与 `user_id` 共同唯一；在任务表保存该值及规范化请求摘要。服务端先查询已存在的幂等键：摘要相同直接返回原任务，即使上传已被消费；摘要不同返回 409。上传对象的唯一消费约束是第二层保护。对象核验属于外部 IO，先完成核验再进入短数据库事务；事务中重新检查上传未消费、身份/预设有效，必要时对对象做最后校验以缩小覆盖窗口。首版默认单用户同时最多一个非终态任务、每日最多十次提交，实际阈值可配置；并对提交/轮询接口限速。
+`idempotencyKey` 是浏览器对一次“点击生成”生成的 UUID，并与 `user_id` 共同唯一；在任务表保存该值及规范化请求摘要。服务端先查询已存在的幂等键：摘要相同直接返回原任务，即使上传已被消费；摘要不同返回 409。上传对象的唯一消费约束是第二层保护。对象核验属于外部 IO，先完成核验再进入短数据库事务；事务中重新检查上传未消费、身份/分类/风格有效、所选版本已具备可执行配置，并以该版本字段规则校验输入；如状态发生变化则拒绝创建，不能以客户端提交的版本号绕过。首版默认单用户同时最多一个非终态任务、每日最多十次提交，实际阈值可配置；并对提交/轮询接口限速。
 
 ## worker API
 
@@ -49,6 +50,7 @@ running.phase = claimed | input_ready | prompt_submitting |
 | 路由 | 输入 / 作用 |
 | --- | --- |
 | `POST /api/worker/jobs/claim` | MySQL 8.0+ 事务中以 `FOR UPDATE SKIP LOCKED` 选最旧 `queued` 或过期 `running` 任务，设置 `running`、新租约、`attempts + 1`；空队列返回 204。若 RDS 小版本/事务隔离级别不支持该锁语义，使用条件 UPDATE 原子抢占 |
+| `GET /api/worker/presets/{id}/versions/{version}` | 独立 worker Bearer 鉴权；只返回指定不可变版本的 workflow、提示词、附加参数及节点映射，不对用户/管理员浏览器开放；缺失或未配置返回明确错误 |
 | `POST /api/worker/jobs/{id}/heartbeat` | `{leaseToken, phase?, promptId?}`；仅当前持有者可续租和推进 phase；第一次提交 `promptId` 时必须在调用 ComfyUI `/prompt` **之前**写入 `prompt_submitting`，以后不得修改 ID |
 | `POST /api/worker/jobs/{id}/input-url` | `{leaseToken}`；签发仅本任务输入的短期读链接 |
 | `POST /api/worker/jobs/{id}/output-upload` | `{leaseToken,index,contentType,size}`；签发限定任务结果 key 的上传凭证 |
