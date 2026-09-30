@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 900" fill="none">
+  <defs><linearGradient id="bg" x1="77" y1="0" x2="680" y2="900" gradientUnits="userSpaceOnUse"><stop stop-color="#bbdbcb"/><stop offset="1" stop-color="#eaf1c8"/></linearGradient><radialGradient id="body" cx="0" cy="0" r="1" gradientTransform="matrix(282 378 -300 224 242 350)" gradientUnits="userSpaceOnUse"><stop stop-color="#fff1df"/><stop offset=".66" stop-color="#f2d9c3"/><stop offset="1" stop-color="#d9b9aa"/></radialGradient><filter id="shadow"><feGaussianBlur stdDeviation="22"/></filter><filter id="grain"><feTurbulence type="fractalNoise" baseFrequency=".8" numOctaves="3" seed="9"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".12"/></feComponentTransfer></filter></defs>
+  <rect width="720" height="900" fill="url(#bg)"/>
+  <ellipse cx="378" cy="754" rx="268" ry="64" fill="#769e86" opacity=".3" filter="url(#shadow)"/>
+  <path d="M0 741c125-59 270-78 414-35 109 32 213 21 306-28v222H0V741Z" fill="#a9c8b3"/>
+  <ellipse cx="362" cy="701" rx="251" ry="73" fill="#7aab98"/>
+  <ellipse cx="362" cy="677" rx="239" ry="69" fill="#d0e2bc"/>
+  <path d="M202 367c-36-78-24-169 33-182 51-11 97 63 102 149m142 22c7-88 47-156 94-141 53 17 59 111 24 183" fill="#edc3b7" stroke="#ddada6" stroke-width="12"/>
+  <path d="M226 355c-27-57-16-128 15-134 31-5 61 54 63 118m209 14c6-68 33-121 59-110 27 12 25 84-1 132" fill="#e8a6aa"/>
+  <path d="M160 470c0-128 84-209 201-209 113 0 205 78 205 207 0 53-14 90-34 127 14 78-12 164-166 168-144 5-195-72-177-163-19-42-29-80-29-130Z" fill="url(#body)"/>
+  <ellipse cx="275" cy="487" rx="13" ry="19" fill="#554552"/><ellipse cx="452" cy="487" rx="13" ry="19" fill="#554552"/>
+  <ellipse cx="251" cy="527" rx="29" ry="14" fill="#eba9a5" opacity=".64"/><ellipse cx="474" cy="527" rx="29" ry="14" fill="#eba9a5" opacity=".64"/>
+  <path d="M346 530c11 15 27 15 37 0" stroke="#7d5959" stroke-width="7" stroke-linecap="round"/>
+  <path d="M191 604c-54 18-58 82-22 105 33 20 81-5 97-30m277-75c51 19 57 82 21 104-34 20-84-4-98-30" fill="#f4dcca" stroke="#dbb9ad" stroke-width="8" stroke-linecap="round"/>
+  <path d="m96 244 9 24 24 9-24 9-9 24-9-24-24-9 24-9 9-24Zm515 94 10 26 26 10-26 10-10 26-10-26-26-10 26-10 10-26Z" fill="#fff9d8"/>
+  <g fill="#e9a88e"><circle cx="100" cy="567" r="9"/><circle cx="123" cy="594" r="6"/><circle cx="615" cy="550" r="8"/></g>
+  <rect width="720" height="900" filter="url(#grain)" opacity=".55"/>
+</svg>
