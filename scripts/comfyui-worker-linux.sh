@@ -8,6 +8,7 @@ COMFY_BASE_URL="${COMFY_BASE_URL:-http://127.0.0.1:8188}"
 WORKER_ID="${WORKER_ID:-comfy-$(hostname -s 2>/dev/null || hostname)}"
 WORKER_NAME="${WORKER_NAME:-$WORKER_ID}"
 WORKER_POLL_INTERVAL_SEC="${WORKER_POLL_INTERVAL_SEC:-4}"
+WORKER_PYTHON="${WORKER_PYTHON:-python3}"
 MAX_IMAGE_BYTES=$((20 * 1024 * 1024))
 WEB_API_BASE_URL="${WEB_API_BASE_URL%/}"
 COMFY_BASE_URL="${COMFY_BASE_URL%/}"
@@ -98,11 +99,41 @@ upload_to_comfy() {
   [[ "$code" == 200 ]] || return 1
   jq -er '.name | strings | select(length>0)' "$out"
 }
+jpegify_opaque_png() {
+  local source="$1" destination="$2"
+  command -v "$WORKER_PYTHON" >/dev/null 2>&1 || return 1
+  "$WORKER_PYTHON" - "$source" "$destination" <<'PY'
+import os
+import sys
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit(3)
+
+source, destination = sys.argv[1:3]
+try:
+    with Image.open(source) as image:
+        rgba = image.convert("RGBA")
+        if rgba.getchannel("A").getextrema()[0] < 255:
+            sys.exit(2)
+        image.convert("RGB").save(destination, format="JPEG", quality=88, optimize=True, progressive=True, icc_profile=image.info.get("icc_profile"))
+    if os.path.getsize(destination) >= os.path.getsize(source):
+        os.remove(destination)
+        sys.exit(4)
+except Exception:
+    try:
+        os.remove(destination)
+    except OSError:
+        pass
+    sys.exit(5)
+PY
+}
 
 process_job() {
   local job="$1" job_id lease preset_id preset_version phase prompt_id
   local preset_file input_url input_type input_size input_file comfy_name workflow map prompt negative additional output_nodes
-  local response_file code body client_id submit_file submit history_file files_file count index item filename subfolder type view_url output_file output_size credential_url credential_token output_key outputs
+  local response_file code body client_id submit_file submit history_file files_file count index item filename subfolder type view_url output_file converted_file output_size credential_url credential_token output_key outputs
   job_id="$(jq -r '.id' <<<"$job")"; lease="$(jq -r '.leaseToken' <<<"$job")"
   preset_id="$(jq -r '.presetId' <<<"$job")"; preset_version="$(jq -r '.presetVersion' <<<"$job")"
   phase="$(jq -r '.phase // "claimed"' <<<"$job")"; prompt_id="$(jq -r '.promptId // ""' <<<"$job")"
@@ -200,6 +231,16 @@ process_job() {
     if (( curl_rc != 0 )); then fail_job "$job_id" "$lease" "comfy_output_curl_$curl_rc"; worker_status idle "" "" >/dev/null 2>&1 || true; return; fi
     if [[ "$code" != 200 ]]; then fail_job "$job_id" "$lease" "comfy_output_download_failed"; worker_status idle "" "" >/dev/null 2>&1 || true; return; fi
     output_size="$(wc -c < "$output_file" | tr -d ' ')"; type="$(file --brief --mime-type "$output_file")"
+    if [[ "$type" == "image/png" ]]; then
+      converted_file="$output_file.jpg"
+      if jpegify_opaque_png "$output_file" "$converted_file"; then
+        output_file="$converted_file"; type="image/jpeg"
+        log_detail "$job_id" comfy_output_converted "index=$index format=jpeg quality=88"
+      else
+        rm -f "$converted_file"
+      fi
+      output_size="$(wc -c < "$output_file" | tr -d ' ')"
+    fi
     log_detail "$job_id" comfy_output_downloaded "index=$index content_type=$type bytes=$output_size"
     response_file="$TMP_DIR/output-credential-$job_id-$index.json"; body="$(jq -cn --arg lease "$lease" --arg type "$type" --argjson index "$index" --argjson size "$output_size" '{leaseToken:$lease,index:$index,contentType:$type,size:$size}')"
     code="$(api_request POST "/api/worker/jobs/$job_id/output-upload" "$body" "$response_file")"

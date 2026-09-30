@@ -103,7 +103,7 @@ npm run start:worker
 
 <sub>ComfyUI 在别的机器？把 `COMFY_BASE_URL` 换成它的内网/Tailscale 地址（例如 `http://100.78.52.73:8188`），**不要用公网地址**。启动器会让这个地址绕过 HTTP 代理，网站和七牛流量仍走系统代理；启动命令前不要把 `http_proxy` / `https_proxy` 清空。</sub>
 
-如果 ComfyUI 服务器没有完整项目仓库，复制单文件 [`scripts/comfyui-worker-linux.sh`](scripts/comfyui-worker-linux.sh) 即可；服务器只需 Bash、curl、jq 和 file。它会保留系统代理给网站 API / 七牛使用，只把 `COMFY_BASE_URL` 加入 `NO_PROXY`。脚本从**进程环境变量**读取配置，不会读取项目的 `.env.local`。
+如果 ComfyUI 服务器没有完整项目仓库，复制单文件 [`scripts/comfyui-worker-linux.sh`](scripts/comfyui-worker-linux.sh) 即可；基本运行只需 Bash、curl、jq 和 file。可选配置 Python 3 + Pillow（`WORKER_PYTHON` 可指向 ComfyUI venv 的 Python），启用 PNG→JPEG 压缩。脚本会保留系统代理给网站 API / 七牛使用，只把 `COMFY_BASE_URL` 加入 `NO_PROXY`。脚本从**进程环境变量**读取配置，不会读取项目的 `.env.local`。
 
 ### 启动参数（环境变量）
 
@@ -116,6 +116,7 @@ npm run start:worker
 | `WORKER_NAME` | 否 | 后台显示名称 | 默认等于 `WORKER_ID` |
 | `WORKER_POLL_INTERVAL_MS` | 否 | Node Worker 空队列轮询间隔 | 默认 `4000` 毫秒 |
 | `WORKER_POLL_INTERVAL_SEC` | 否 | Linux Shell Worker 空队列轮询间隔 | 默认 `4` 秒 |
+| `WORKER_PYTHON` | 否 | Linux Shell Worker 用于 JPEG 转换的 Python（需装 Pillow） | 默认 `python3` |
 
 Linux 独立脚本启动示例（把密钥替换成网站上的**同一个** `WORKER_TOKEN`）：
 
@@ -126,6 +127,7 @@ export COMFY_BASE_URL="http://100.78.52.73:8188"
 export WORKER_ID="comfy-worker-01"       # 可选
 export WORKER_NAME="图像生成节点 01"        # 可选
 export WORKER_POLL_INTERVAL_SEC=4          # 可选
+export WORKER_PYTHON="/path/to/comfyui/venv/bin/python" # 可选，且需要 Pillow
 ./comfyui-worker-linux.sh
 ```
 

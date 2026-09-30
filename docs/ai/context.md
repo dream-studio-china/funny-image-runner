@@ -51,7 +51,8 @@ ComfyUI 同机 Worker ──127.0.0.1:8188──> 本地 ComfyUI
 ## Worker 与 ComfyUI
 
 - 启动：完整项目 `npm run start:worker`，底层启动器 `scripts/start-comfyui-worker.mjs`，实际 Worker `scripts/comfyui-worker.mjs`；无仓库的 Linux ComfyUI 主机可用 `scripts/comfyui-worker-linux.sh`。
-- Node Worker 要求 Node 22.21+（启动时使用 Node 环境代理支持）；Shell Worker 依赖 Bash、curl、jq、file。配置 `WEB_API_BASE_URL`、与网站一致的 `WORKER_TOKEN`、`COMFY_BASE_URL`；ComfyUI host 自动加入 `NO_PROXY`，不要清空系统 HTTP(S) 代理。
+- Node Worker 要求 Node 22.21+（启动时使用 Node 环境代理支持）；Shell Worker 基础依赖 Bash、curl、jq、file。配置 `WEB_API_BASE_URL`、与网站一致的 `WORKER_TOKEN`、`COMFY_BASE_URL`；ComfyUI host 自动加入 `NO_PROXY`，不要清空系统 HTTP(S) 代理。
+- Node Worker 在上传前尝试将不透明 PNG 用 sharp 以 JPEG quality 88 转码，只有转码后更小时才采用；包含透明像素的 PNG 保留原格式。Linux Shell Worker 同样尝试转码，但需 Python 3 + Pillow（可用 `WORKER_PYTHON` 指向解释器），不可用时原样上传。
 - 云端 Worker API：claim、heartbeat/status、job heartbeat、input-url、preset version config、output-upload、complete、fail。用户新建任务后若 Worker 未在线，任务保持 `queued`。
 - 提交 ComfyUI `/prompt` 前先持久化 `prompt_submitting`；ComfyUI 自己生成 `prompt_id`，Worker 取得后立即记账。提交结果不确定时进入 `execution_uncertain`，不能自动重放。租约用于并发保护；ComfyUI 与 MySQL/七牛无分布式事务。
 - 当前开发者仍须确认实际 workflow JSON、节点映射、模型和 custom nodes；Worker 状态在线并不代表任一预设 workflow 已成功产图，按 runbook 做真实端到端验证。

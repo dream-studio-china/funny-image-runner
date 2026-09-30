@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import os from "node:os";
+import sharp from "sharp";
 
 const WEB = (process.env.WEB_API_BASE_URL ?? "").replace(/\/$/, "");
 const TOKEN = process.env.WORKER_TOKEN ?? "";
@@ -116,6 +117,19 @@ async function download(url, signal) {
   if (!bytes.length || bytes.length > MAX_BYTES) throw Object.assign(new Error("invalid_image_size"), { code: "invalid_image_size" });
   return { bytes, type };
 }
+async function compactOutput(image, jobId) {
+  if (image.type !== "image/png") return image;
+  try {
+    const stats = await sharp(image.bytes).stats();
+    if (!stats.isOpaque) return image;
+    const bytes = await sharp(image.bytes).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+    if (bytes.length >= image.bytes.length) return image;
+    log(jobId, "output_converted_to_jpeg");
+    return { bytes, type: "image/jpeg" };
+  } catch {
+    return image;
+  }
+}
 async function runHeartbeat(job, state) {
   while (!state.done && !stopping) {
     await new Promise((resolve) => setTimeout(resolve, 25_000));
@@ -216,11 +230,13 @@ async function processJob(job) {
       await heartbeatNow(job, state, "downloading_output", promptId);
       const file = files[index];
       const params = new URLSearchParams({ filename: file.filename, subfolder: file.subfolder ?? "", type: file.type ?? "output" });
-      const image = await comfy(`/view?${params}`, { signal: baseSignal }).then(async (r) => ({ bytes: Buffer.from(await r.arrayBuffer()), type: (r.headers.get("content-type") ?? "").split(";")[0].toLowerCase() }));
+      const downloadedImage = await comfy(`/view?${params}`, { signal: baseSignal }).then(async (r) => ({ bytes: Buffer.from(await r.arrayBuffer()), type: (r.headers.get("content-type") ?? "").split(";")[0].toLowerCase() }));
+      const image = await compactOutput(downloadedImage, job.id);
       if (!allowedTypes.has(image.type) || image.bytes.length < 1 || image.bytes.length > MAX_BYTES) throw Object.assign(new Error("invalid_output"), { code: "invalid_output" });
       await heartbeatNow(job, state, "uploading_output", promptId);
       const credential = await apiJson(`/api/worker/jobs/${encodeURIComponent(job.id)}/output-upload`, "POST", { leaseToken: job.leaseToken, index, size: image.bytes.length, contentType: image.type });
-      await uploadMultipart(credential.uploadUrl, { token: credential.uploadToken, key: credential.key }, image.bytes, image.type, `output-${index}`, baseSignal);
+      const extension = image.type === "image/jpeg" ? "jpg" : image.type === "image/webp" ? "webp" : "png";
+      await uploadMultipart(credential.uploadUrl, { token: credential.uploadToken, key: credential.key }, image.bytes, image.type, `output-${index}.${extension}`, baseSignal);
       outputs.push({ index, key: credential.key, contentType: image.type, size: image.bytes.length });
     }
     await apiJson(`/api/worker/jobs/${encodeURIComponent(job.id)}/complete`, "POST", { leaseToken: job.leaseToken, outputs });
