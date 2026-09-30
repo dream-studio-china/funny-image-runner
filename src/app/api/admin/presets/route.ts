@@ -54,7 +54,6 @@ export async function POST(request: Request): Promise<Response> {
   let configId: string | null = null;
   let configVersion: number | null = null;
   let selectedWorkflow = workflow;
-  const executable = isRecord(selectedWorkflow) && Object.keys(selectedWorkflow).length > 0;
   if (body.workflowConfigId !== undefined && body.workflowConfigId !== null) {
     if (typeof body.workflowConfigId !== "string") return jsonResponse({ error: "invalid_workflow_config" }, 400);
     const [configs] = await getPool().execute("SELECT id,version,workflow,node_mapping AS nodeMapping,enabled FROM workflow_configs WHERE id=?", [body.workflowConfigId]);
@@ -66,6 +65,7 @@ export async function POST(request: Request): Promise<Response> {
     if (body.enabled === true && !hasRequiredPresetPrompts(nodeMapping, body.prompt, body.negativePrompt)) return jsonResponse({ error: "preset_prompt_required" }, 400);
     configId = String(config.id); configVersion = Number(config.version);
   }
+  const executable = isRecord(selectedWorkflow) && Object.keys(selectedWorkflow).length > 0;
   if (body.enabled === true && !executable) return jsonResponse({ error: "workflow_required" }, 400);
   if (executable && !hasValidPresetNodeMapping(selectedWorkflow, nodeMapping, body.prompt, body.negativePrompt)) return jsonResponse({ error: "invalid_node_mapping" }, 400);
   const jsonFields = [selectedWorkflow, body.additional, nodeMapping];
