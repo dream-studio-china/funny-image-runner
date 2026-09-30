@@ -21,20 +21,34 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
   if (!/^[0-9a-f-]{36}$/i.test(id)) return jsonResponse({ error: "not_found" }, 404);
   try {
     const [jobs] = await getPool().execute<RowDataPacket[]>(
-      "SELECT id FROM jobs WHERE id = ? AND user_id = ? AND status = 'succeeded' LIMIT 1",
+      `SELECT j.id, u.object_key AS inputKey, u.content_type AS inputContentType,
+              u.declared_size AS inputSize, u.deleted_at AS inputDeletedAt
+       FROM jobs j JOIN uploads u ON u.id = j.upload_id AND u.user_id = j.user_id
+       WHERE j.id = ? AND j.user_id = ? AND j.status = 'succeeded' LIMIT 1`,
       [id, user.id],
     );
     if (!jobs[0]) return jsonResponse({ error: "result_not_ready" }, 409);
     const [outputs] = await getPool().execute<RowDataPacket[]>(
-      "SELECT output_index AS `index`, object_key AS objectKey, content_type AS contentType FROM job_outputs WHERE job_id = ? AND deleted_at IS NULL ORDER BY output_index",
+      "SELECT output_index AS `index`, object_key AS objectKey, content_type AS contentType, size FROM job_outputs WHERE job_id = ? AND deleted_at IS NULL ORDER BY output_index",
       [id],
     );
-    return jsonResponse({ results: outputs.map((output) => ({
-      index: output.index,
-      contentType: output.contentType,
-      url: createPrivateDownloadUrl(output.objectKey as string),
-      previewUrl: createPrivateImageViewUrl(output.objectKey as string, { mode: 2, width: 1100, height: 900, quality: 84, format: "webp" }),
-    })) });
+    const job = jobs[0];
+    return jsonResponse({
+      input: {
+        url: job.inputDeletedAt ? null : createPrivateDownloadUrl(job.inputKey as string),
+        previewUrl: job.inputDeletedAt ? null : createPrivateImageViewUrl(job.inputKey as string, { mode: 2, width: 1100, height: 900, quality: 84, format: "webp" }),
+        contentType: job.inputContentType,
+        size: Number(job.inputSize),
+        deleted: Boolean(job.inputDeletedAt),
+      },
+      results: outputs.map((output) => ({
+        index: output.index,
+        contentType: output.contentType,
+        size: Number(output.size),
+        url: createPrivateDownloadUrl(output.objectKey as string),
+        previewUrl: createPrivateImageViewUrl(output.objectKey as string, { mode: 2, width: 1100, height: 900, quality: 84, format: "webp" }),
+      })),
+    });
   } catch (error) {
     console.error("Job result lookup failed", error instanceof Error ? error.message : "unknown error");
     return jsonResponse({ error: "storage_unavailable" }, 503);

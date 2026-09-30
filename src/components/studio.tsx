@@ -37,7 +37,10 @@ type LiveJob = {
   errorCode?: string;
 };
 type LiveResult = { index: number; contentType: string; url: string; previewUrl?: string };
-type SavedJob = { id: string; presetId: string; status: LiveJob["status"]; createdAt: string; errorCode?: string | null };
+type SavedJob = { id: string; presetId: string; presetVersion?: number; status: LiveJob["status"]; createdAt: string; errorCode?: string | null; parameters?: Record<string, string>; thumbnailUrl?: string | null };
+type WorkImage = { url: string | null; previewUrl: string | null; contentType: string; size: number; deleted?: boolean; index?: number };
+type WorkResultData = { input: WorkImage; results: WorkImage[] };
+type WorkLightbox = { id: string; presetId: string; presetVersion?: number; status: string; createdAt: string; errorCode?: string | null; parameters: Record<string, string>; demoImageUrl?: string; result?: WorkResultData };
 type PublicCategory = { id: string; name: string; sortOrder: number; enabled: boolean; image?: string | null };
 type PublicPreset = Preset & { categoryId?: string | null; galleryImage?: string; sampleImage?: string; previewImage?: string };
 
@@ -110,6 +113,10 @@ function SectionKicker({ number, children }: { number: string; children: React.R
   );
 }
 
+function formatImageSize(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
 function PresetCard({ preset, selected, disabled, onSelect }: { preset: PublicPreset; selected: boolean; disabled: boolean; onSelect: () => void }) {
   return (
     <button
@@ -150,6 +157,9 @@ export default function Studio() {
   const [savedJobs, setSavedJobs] = useState<SavedJob[]>([]);
   const [history, setHistory] = useState<DemoJob[]>([]);
   const [activeJob, setActiveJob] = useState<DemoJob | null>(null);
+  const [workLightbox, setWorkLightbox] = useState<WorkLightbox | null>(null);
+  const [workLightboxLoading, setWorkLightboxLoading] = useState(false);
+  const [workLightboxError, setWorkLightboxError] = useState("");
   const [toast, setToast] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
@@ -432,22 +442,41 @@ export default function Studio() {
   }
 
   function openJob(job: DemoJob) {
-    setActiveJob(job);
-    setStage("done");
-    scrollToSection("demo-status");
+    const preset = presetOptions.find((item) => item.id === job.presetId) ?? presetOptions[0] ?? presets[0];
+    setWorkLightbox({ ...job, status: "demo", parameters: { mood: job.mood, note: job.note }, demoImageUrl: preset.previewImage ?? preset.image });
+    setWorkLightboxError("");
   }
 
   async function openSavedJob(job: SavedJob) {
-    setActiveJob(null);
-    setStage("idle");
-    setLiveResults([]);
-    setLiveJob({ id: job.id, presetId: job.presetId, mood: "", status: job.status, errorCode: job.errorCode ?? undefined });
-    if (job.status === "succeeded") {
+    setWorkLightbox({
+      id: job.id,
+      presetId: job.presetId,
+      presetVersion: job.presetVersion,
+      status: job.status,
+      createdAt: job.createdAt,
+      errorCode: job.errorCode,
+      parameters: job.parameters ?? {},
+    });
+    setWorkLightboxError("");
+    setWorkLightboxLoading(false);
+    if (job.status !== "succeeded") return;
+    setWorkLightboxLoading(true);
+    try {
       const response = await fetch(`/api/jobs/${job.id}/result`, { cache: "no-store" });
-      const result = await response.json() as { results?: LiveResult[] };
-      if (response.ok) setLiveResults(result.results ?? []);
+      const result = await response.json() as WorkResultData;
+      if (!response.ok) throw new Error("作品图片暂时无法读取，请稍后重试。");
+      setWorkLightbox((current) => current?.id === job.id ? { ...current, result } : current);
+    } catch (reason) {
+      setWorkLightboxError(reason instanceof Error ? reason.message : "作品图片暂时无法读取，请稍后重试。");
+    } finally {
+      setWorkLightboxLoading(false);
     }
-    scrollToSection("demo-status");
+  }
+
+  function closeWorkLightbox() {
+    setWorkLightbox(null);
+    setWorkLightboxError("");
+    setWorkLightboxLoading(false);
   }
 
   function resetDemo() {
@@ -606,7 +635,7 @@ export default function Studio() {
               {savedJobs.map((job) => {
                 const preset = presetOptions.find((item) => item.id === job.presetId) ?? presetOptions[0] ?? presets[0];
                 return <button type="button" className="work-card group" key={job.id} onClick={() => { void openSavedJob(job); }} aria-label={`查看${preset.name}任务，${jobStatusLabel(job.status)}`}>
-                  <div className="task-art" style={{ backgroundColor: preset.tint }}><Sparkles size={38} style={{ color: preset.accent }} /><span>{jobStatusLabel(job.status)}</span></div>
+                  <div className={`task-art ${job.status === "succeeded" && job.thumbnailUrl ? "has-result-image" : ""}`} style={{ backgroundColor: preset.tint }}>{job.status === "succeeded" && job.thumbnailUrl && <Image src={job.thumbnailUrl} alt={`${preset.name}生成作品`} fill unoptimized sizes="(max-width: 640px) 45vw, 240px" className="task-result-image" />}<Sparkles size={38} style={{ color: preset.accent }} /><span>{jobStatusLabel(job.status)}</span></div>
                   <div className="work-meta"><strong>{preset.name}</strong><span>{new Date(job.createdAt).toLocaleDateString("zh-CN", { month: "short", day: "numeric" })}<ArrowRight size={15} /></span></div>
                 </button>;
               })}
@@ -616,6 +645,34 @@ export default function Studio() {
           </> : <div className="empty-works"><div className="empty-works-icon"><Images size={35} strokeWidth={1.4} /><span>✦</span></div><h3>这里还是一张白纸</h3><p>创造你的第一个作品，<br />让这本灵感小册热闹起来。</p><button type="button" className="secondary-button" onClick={() => scrollToSection("studio")}>去试试看 <ArrowRight size={17} /></button></div>}
         </section>
       </main>
+
+      {workLightbox && (() => {
+        const preset = presetOptions.find((item) => item.id === workLightbox.presetId);
+        const isDemo = workLightbox.status === "demo";
+        const statusText = isDemo ? "演示记录" : jobStatusLabel(workLightbox.status as LiveJob["status"]);
+        return <div className="work-lightbox" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeWorkLightbox(); }}>
+          <section className="work-lightbox-dialog" role="dialog" aria-modal="true" aria-labelledby="work-lightbox-title">
+            <button type="button" className="work-lightbox-close" onClick={closeWorkLightbox} aria-label="关闭作品详情"><X size={21} /></button>
+            <header className="work-lightbox-heading"><div><span className="progress-kicker">{isDemo ? "DEMO MEMORY" : "YOUR CREATION"}</span><h2 id="work-lightbox-title">{preset?.name ?? workLightbox.presetId}</h2><p>{isDemo ? "这是风格示例，不是实际生成结果。" : `任务 ${workLightbox.id}`}</p></div><span className={`work-lightbox-status ${workLightbox.status === "succeeded" ? "is-success" : workLightbox.status === "failed" ? "is-failed" : ""}`}>{statusText}</span></header>
+            <div className="work-lightbox-layout">
+              <div className="work-lightbox-gallery" aria-label="作品图片">
+                {workLightbox.demoImageUrl && <figure><div className="work-lightbox-image"><Image src={workLightbox.demoImageUrl} alt={`${preset?.name ?? "预设"}演示样图`} fill unoptimized sizes="(max-width: 760px) 90vw, 44vw" /></div><figcaption>预制风格示例 · 非真实生成</figcaption></figure>}
+                {workLightboxLoading && <div className="work-lightbox-empty">正在读取原图和生成结果…</div>}
+                {!isDemo && !workLightboxLoading && workLightbox.result && <>
+                  {workLightbox.result.input.previewUrl
+                    ? <figure><div className="work-lightbox-image"><Image src={workLightbox.result.input.previewUrl} alt="上传原图" fill unoptimized sizes="(max-width: 760px) 90vw, 44vw" /></div><figcaption>上传原图 · {formatImageSize(workLightbox.result.input.size)} · {workLightbox.result.input.contentType}</figcaption>{workLightbox.result.input.url && <a href={workLightbox.result.input.url} target="_blank" rel="noreferrer">查看原图</a>}</figure>
+                    : <figure><div className="work-lightbox-image is-unavailable">{workLightbox.result.input.deleted ? "原图已删除" : "原图暂不可用"}</div><figcaption>上传原图 · {workLightbox.result.input.contentType}</figcaption></figure>}
+                  {workLightbox.result.results.map((result) => <figure key={result.index}><div className="work-lightbox-image">{result.previewUrl && <Image src={result.previewUrl} alt={`生成结果 ${Number(result.index ?? 0) + 1}`} fill unoptimized sizes="(max-width: 760px) 90vw, 44vw" />}</div><figcaption>生成结果 {Number(result.index ?? 0) + 1} · {formatImageSize(result.size)} · {result.contentType}</figcaption>{result.url && <a href={result.url} target="_blank" rel="noreferrer">查看原图</a>}</figure>)}
+                  {!workLightbox.result.results.length && !workLightbox.result.input.previewUrl && <div className="work-lightbox-empty">没有可显示的图片</div>}
+                </>}
+                {!isDemo && !workLightboxLoading && workLightbox.status === "failed" && <div className="work-lightbox-empty">任务失败，未生成图片{workLightbox.errorCode ? ` · ${workLightbox.errorCode}` : ""}</div>}
+                {workLightboxError && <div className="work-lightbox-empty" role="alert">{workLightboxError}</div>}
+              </div>
+              <aside className="work-lightbox-details"><h3>作品信息</h3><dl><dt>使用风格</dt><dd>{preset?.name ?? workLightbox.presetId}</dd><dt>风格 ID</dt><dd>{workLightbox.presetId}</dd><dt>预设版本</dt><dd>{workLightbox.presetVersion ?? "演示"}</dd><dt>完成状态</dt><dd>{statusText}</dd><dt>创建时间</dt><dd>{new Date(workLightbox.createdAt).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" })}</dd>{workLightbox.parameters.mood && <><dt>心情</dt><dd>{workLightbox.parameters.mood}</dd></>}{workLightbox.parameters.note && <><dt>想法</dt><dd>{workLightbox.parameters.note}</dd></>}{!isDemo && workLightbox.result && <><dt>生成张数</dt><dd>{workLightbox.result.results.length}</dd></>}</dl></aside>
+            </div>
+          </section>
+        </div>;
+      })()}
 
       <footer className="site-footer"><div className="container footer-inner"><div><div className="footer-logo">✳ 咔嚓造梦局</div><p>让每一张平凡的照片，都有做梦的权利。</p></div><div className="footer-right"><span>MADE FOR THE DAYDREAMERS ✦</span><small>当前为交互演示 · 图像生成服务尚未接入</small></div></div></footer>
 

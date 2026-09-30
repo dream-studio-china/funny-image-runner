@@ -5,7 +5,7 @@ import { getSessionUser } from "@/lib/auth";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson } from "@/lib/http";
 import { getStoredPresets } from "@/lib/preset-store";
 import type { StoredPreset } from "@/lib/preset-store";
-import { verifyUploadedObject } from "@/lib/qiniu";
+import { createPrivateImageViewUrl, verifyUploadedObject } from "@/lib/qiniu";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -228,12 +228,25 @@ export async function GET(request: Request): Promise<Response> {
   const limit = Math.floor(Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 20) || 20)));
   try {
     const [rows] = await getPool().execute<RowDataPacket[]>(
-      `SELECT id, preset_id AS presetId, preset_version AS presetVersion, status, error_code AS errorCode,
-              created_at AS createdAt, finished_at AS finishedAt
-       FROM jobs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ${limit}`,
+      `SELECT j.id, j.preset_id AS presetId, j.preset_version AS presetVersion, j.status,
+              j.error_code AS errorCode, j.parameters, j.created_at AS createdAt, j.finished_at AS finishedAt,
+              (SELECT o.object_key FROM job_outputs o WHERE o.job_id = j.id AND o.deleted_at IS NULL ORDER BY o.output_index LIMIT 1) AS outputKey
+       FROM jobs j WHERE j.user_id = ? ORDER BY j.created_at DESC, j.id DESC LIMIT ${limit}`,
       [user.id],
     );
-    return jsonResponse({ jobs: rows });
+    return jsonResponse({ jobs: rows.map((row) => ({
+      id: row.id,
+      presetId: row.presetId,
+      presetVersion: row.presetVersion,
+      status: row.status,
+      errorCode: row.errorCode,
+      parameters: typeof row.parameters === "string" ? JSON.parse(row.parameters) as Record<string, string> : row.parameters,
+      createdAt: row.createdAt,
+      finishedAt: row.finishedAt,
+      thumbnailUrl: row.status === "succeeded" && typeof row.outputKey === "string"
+        ? createPrivateImageViewUrl(row.outputKey, { mode: 1, width: 400, height: 400, quality: 72, format: "webp" })
+        : null,
+    })) });
   } catch (error) {
     console.error("Job list query failed", error instanceof Error ? error.message : "unknown error");
     return jsonResponse({ error: "service_unavailable" }, 503);
