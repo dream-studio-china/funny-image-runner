@@ -192,13 +192,13 @@ export async function GET(request: Request): Promise<Response> {
   }
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
   const url = new URL(request.url);
-  const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 20) || 20));
+  const limit = Math.floor(Math.min(50, Math.max(1, Number(url.searchParams.get("limit") ?? 20) || 20)));
   try {
     const [rows] = await getPool().execute<RowDataPacket[]>(
       `SELECT id, preset_id AS presetId, preset_version AS presetVersion, status, error_code AS errorCode,
               created_at AS createdAt, finished_at AS finishedAt
-       FROM jobs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
-      [user.id, limit],
+       FROM jobs WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ${limit}`,
+      [user.id],
     );
     return jsonResponse({ jobs: rows });
   } catch (error) {

@@ -20,7 +20,8 @@ function createPool(): Pool {
   const ca = process.env.MYSQL_SSL_CA_BASE64
     ? Buffer.from(process.env.MYSQL_SSL_CA_BASE64, "base64").toString("utf8")
     : undefined;
-  const ssl = process.env.NODE_ENV === "production"
+  const useTls = process.env.NODE_ENV === "production" || /\.tidbcloud\.com$/i.test(url.hostname);
+  const ssl = useTls
     ? { rejectUnauthorized: true, ...(ca ? { ca } : {}) }
     : undefined;
 

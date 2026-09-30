@@ -50,6 +50,13 @@
       "when": 1790738000000,
       "tag": "0006_workflow_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1790739000000,
+      "tag": "0007_worker_status",
+      "breakpoints": true
     }
   ]
 }

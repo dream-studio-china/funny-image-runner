@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 
 const WEB = (process.env.WEB_API_BASE_URL ?? "").replace(/\/$/, "");
 const TOKEN = process.env.WORKER_TOKEN ?? "";
@@ -6,9 +7,15 @@ const COMFY = (process.env.COMFY_BASE_URL ?? "http://127.0.0.1:8188").replace(/\
 const POLL_MS = Math.max(1000, Number(process.env.WORKER_POLL_INTERVAL_MS ?? 4000) || 4000);
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_BYTES = 20 * 1024 * 1024;
+const WORKER_ID = process.env.WORKER_ID || `comfy-${os.hostname()}`;
+const WORKER_NAME = process.env.WORKER_NAME || WORKER_ID;
 const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 let stopping = false;
 let activeAbort;
+let workerState = "starting";
+let currentJobId = null;
+let lastError = null;
+let lastStatusAt = 0;
 
 function log(jobId, phase, code) {
   console.log(JSON.stringify({ job_id: jobId ?? null, phase, ...(code ? { error_code: code } : {}) }));
@@ -23,7 +30,11 @@ function makeAbort(timeout = REQUEST_TIMEOUT_MS) {
 async function json(response) {
   let data;
   try { data = await response.json(); } catch { throw Object.assign(new Error("bad_json"), { code: "bad_json" }); }
-  if (!response.ok) throw Object.assign(new Error("api_error"), { code: typeof data?.error === "string" ? data.error : `http_${response.status}`, status: response.status });
+  if (!response.ok) {
+    const error = Object.assign(new Error("api_error"), { code: typeof data?.error === "string" ? data.error : `http_${response.status}`, status: response.status });
+    stopIfUnauthorized(error);
+    throw error;
+  }
   return data;
 }
 async function api(path, method = "GET", body, signal) {
@@ -35,6 +46,20 @@ async function api(path, method = "GET", body, signal) {
   return response;
 }
 async function apiJson(path, method, body, signal) { return json(await api(path, method, body, signal)); }
+async function workerStatus(state = workerState, error = lastError, jobId = currentJobId) {
+  workerState = state;
+  lastError = error ?? null;
+  currentJobId = jobId ?? null;
+  await apiJson("/api/worker/heartbeat", "POST", { id: WORKER_ID, name: WORKER_NAME, state, currentJobId, lastError });
+  lastStatusAt = Date.now();
+}
+function stopIfUnauthorized(error) {
+  if (error?.status === 401 || error?.status === 403) {
+    stopping = true;
+    process.exitCode = 1;
+    activeAbort?.abort();
+  }
+}
 async function comfy(path, options = {}) {
   const response = await fetch(`${COMFY}${path}`, { ...options, signal: options.signal ?? makeAbort() });
   if (!response.ok) throw Object.assign(new Error("comfy_error"), { code: `comfy_http_${response.status}` });
@@ -111,7 +136,10 @@ async function processJob(job) {
   activeAbort = new AbortController();
   const hb = runHeartbeat(job, state);
   const baseSignal = AbortSignal.any([activeAbort.signal, makeAbort(20 * 60_000)]);
+  try { await workerStatus("processing", null, job.id); }
+  catch (error) { stopIfUnauthorized(error); if (stopping) state.lost = true; }
   try {
+    if (state.lost) throw Object.assign(new Error("worker_status_unavailable"), { code: "worker_status_unavailable" });
     if (!state.promptId && job.phase === "prompt_submitting") throw executionUncertain();
     const presetData = await apiJson(`/api/worker/presets/${encodeURIComponent(job.presetId)}/versions/${job.presetVersion}`);
     const preset = presetData.preset;
@@ -200,6 +228,10 @@ async function processJob(job) {
     state.done = true;
     activeAbort = undefined;
     await hb;
+    if (!stopping && !state.lost) {
+      try { await workerStatus("idle", null, null); }
+      catch (error) { stopIfUnauthorized(error); log(null, "status", safeCode(error)); }
+    }
   }
 }
 
@@ -207,9 +239,35 @@ if (!WEB || !TOKEN) {
   console.error("WORKER_CONFIGURATION_MISSING");
   process.exit(1);
 }
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; activeAbort?.abort(); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, async () => {
+  if (stopping) return;
+  try { await workerStatus("stopping", null, currentJobId); } catch (error) { stopIfUnauthorized(error); }
+  stopping = true;
+  activeAbort?.abort();
+});
+
+try { await workerStatus("starting", null, null); }
+catch (error) { stopIfUnauthorized(error); log(null, "status", safeCode(error)); }
+while (!stopping) {
+  try {
+    await comfy("/system_stats");
+    await workerStatus("idle", null, null);
+    break;
+  } catch (error) {
+    stopIfUnauthorized(error);
+    const code = safeCode(error);
+    if (Date.now() - lastStatusAt >= 15_000) {
+      try { await workerStatus("starting", code, null); } catch (statusError) { stopIfUnauthorized(statusError); }
+    }
+    if (!stopping) await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+}
 
 while (!stopping) {
+  if (workerState === "idle" && Date.now() - lastStatusAt >= 15_000) {
+    try { await workerStatus("idle", null, null); }
+    catch (error) { stopIfUnauthorized(error); log(null, "status", safeCode(error)); }
+  }
   try {
     const response = await api("/api/worker/jobs/claim", "POST", {});
     if (response.status === 204) {
@@ -223,7 +281,7 @@ while (!stopping) {
   } catch (error) {
     const code = safeCode(error);
     log(null, "poll", code);
-    if (error.status === 401 || error.status === 403) process.exitCode = 1;
+    stopIfUnauthorized(error);
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
 }

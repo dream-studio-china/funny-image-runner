@@ -123,6 +123,16 @@ export const workflowConfigs = mysqlTable("workflow_configs", {
   updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
 });
 
+export const workers = mysqlTable("workers", {
+  id: varchar("id", { length: 128 }).primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  state: mysqlEnum("state", ["starting", "idle", "processing", "stopping"]).notNull(),
+  currentJobId: char("current_job_id", { length: 36 }),
+  lastError: varchar("last_error", { length: 80 }),
+  startedAt: datetime("started_at", { mode: "date", fsp: 3 }).notNull(),
+  lastSeenAt: datetime("last_seen_at", { mode: "date", fsp: 3 }).notNull(),
+}, (table) => [index("workers_last_seen_idx").on(table.lastSeenAt)]);
+
 export const authRateLimits = mysqlTable("auth_rate_limits", {
   keyHash: char("key_hash", { length: 64 }).primaryKey(),
   attempts: int("attempts").notNull().default(0),

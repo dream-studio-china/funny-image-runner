@@ -17,7 +17,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
   }
   const { id: userId } = await params;
   if (!validateUserId(userId)) return jsonResponse({ error: "user_not_found" }, 404);
-  const limit = Math.min(50, Math.max(1, Number(new URL(request.url).searchParams.get("limit") ?? 30) || 30));
+  const limit = Math.floor(Math.min(50, Math.max(1, Number(new URL(request.url).searchParams.get("limit") ?? 30) || 30)));
 
   try {
     const [rows] = await getPool().execute<RowDataPacket[]>(
@@ -27,8 +27,8 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
               u.object_key AS inputKey, u.content_type AS inputContentType,
               u.declared_size AS inputSize, u.created_at AS inputCreatedAt
        FROM jobs j JOIN uploads u ON u.id = j.upload_id AND u.user_id = j.user_id
-       WHERE j.user_id = ? ORDER BY j.created_at DESC, j.id DESC LIMIT ?`,
-      [userId, limit],
+       WHERE j.user_id = ? ORDER BY j.created_at DESC, j.id DESC LIMIT ${limit}`,
+      [userId],
     );
     if (!rows.length) return jsonResponse({ jobs: [] });
     const ids = rows.map((row) => row.id as string);
