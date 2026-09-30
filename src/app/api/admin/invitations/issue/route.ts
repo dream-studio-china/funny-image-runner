@@ -18,6 +18,7 @@ type IssuedInvitation = {
   codeHash: string;
   codeCiphertext: string | null;
   expiresAt: Date | string | null;
+  accountTtlMinutes: number | null;
   revokedAt: Date | string | null;
 };
 
@@ -51,26 +52,30 @@ function inviteTtlDays(): number {
   return configured;
 }
 
-function validateRequest(body: unknown): { orderRef: string; userId: string; sourceRef: string } | null {
+const ACCOUNT_TTL_CHOICES = new Set([60, 240, 1440, 4320, 10080, 43200, 525600]);
+
+function validateRequest(body: unknown): { orderRef: string; userId: string; sourceRef: string; accountTtlMinutes: number | null } | null {
   if (!isRecord(body) || typeof body.orderRef !== "string" || body.orderRef.trim().length < 1 || body.orderRef.length > 256) return null;
   if (/[\u0000-\u001f\u007f]/.test(body.orderRef)) return null;
 
   const orderRef = body.orderRef.trim();
   if (body.userId !== undefined && !validateUserId(body.userId)) return null;
   if (body.customerRef !== undefined && (typeof body.customerRef !== "string" || body.customerRef.trim().length < 1 || body.customerRef.length > 256)) return null;
+  const accountTtlMinutes = body.accountTtlMinutes === undefined ? 1440 : body.accountTtlMinutes;
+  if (accountTtlMinutes !== null && (!Number.isInteger(accountTtlMinutes) || !ACCOUNT_TTL_CHOICES.has(accountTtlMinutes as number))) return null;
 
   const customerRef = typeof body.customerRef === "string" ? body.customerRef.trim() : orderRef;
   const userId = typeof body.userId === "string"
     ? body.userId
     : `taobao_${createHash("sha256").update(customerRef).digest("hex").slice(0, 24)}`;
   const sourceRef = createHash("sha256").update(`${SOURCE}:${orderRef}`).digest("hex");
-  return { orderRef, userId, sourceRef };
+  return { orderRef, userId, sourceRef, accountTtlMinutes: accountTtlMinutes as number | null };
 }
 
 async function findIssuedInvitation(connection: PoolConnection, sourceRef: string): Promise<IssuedInvitation | null> {
   const [rows] = await connection.execute<RowDataPacket[]>(
     `SELECT id, user_id AS userId, code_hash AS codeHash, code_ciphertext AS codeCiphertext,
-            expires_at AS expiresAt, revoked_at AS revokedAt
+            expires_at AS expiresAt, account_ttl_minutes AS accountTtlMinutes, revoked_at AS revokedAt
      FROM invitations WHERE issue_source = ? AND source_ref = ? FOR UPDATE`,
     [SOURCE, sourceRef],
   );
@@ -85,6 +90,7 @@ function issueResponse(invitation: IssuedInvitation, idempotent: boolean): Respo
     invitationId: invitation.id,
     inviteUrl: createInvitationUrl(code),
     expiresAt,
+    accountTtlMinutes: invitation.accountTtlMinutes,
     idempotent,
   }, idempotent ? 200 : 201);
 }
@@ -129,14 +135,22 @@ export async function POST(request: Request): Promise<Response> {
       "INSERT INTO users (id, created_at) VALUES (?, UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE id = id",
       [requestData.userId],
     );
-    const [userRows] = await connection.execute<RowDataPacket[]>("SELECT disabled_at AS disabledAt FROM users WHERE id = ? FOR UPDATE", [requestData.userId]);
+    const [userRows] = await connection.execute<RowDataPacket[]>("SELECT disabled_at AS disabledAt, account_expires_at AS accountExpiresAt FROM users WHERE id = ? FOR UPDATE", [requestData.userId]);
     if (!userRows[0] || userRows[0].disabledAt) {
       await connection.rollback();
       return jsonResponse({ error: "user_disabled" }, 409);
     }
+    if (userRows[0].accountExpiresAt && new Date(userRows[0].accountExpiresAt) <= new Date()) {
+      await connection.rollback();
+      return jsonResponse({ error: "account_expired" }, 409);
+    }
     const existing = await findIssuedInvitation(connection, requestData.sourceRef);
     if (existing) {
       if (existing.userId !== requestData.userId) {
+        await connection.rollback();
+        return jsonResponse({ error: "order_conflict" }, 409);
+      }
+      if (existing.accountTtlMinutes !== requestData.accountTtlMinutes) {
         await connection.rollback();
         return jsonResponse({ error: "order_conflict" }, 409);
       }
@@ -156,18 +170,19 @@ export async function POST(request: Request): Promise<Response> {
       codeHash: createHash("sha256").update(normalizedCode).digest("hex"),
       codeCiphertext: encryptInvitationCode(rawCode),
       expiresAt: new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000),
+      accountTtlMinutes: requestData.accountTtlMinutes,
       revokedAt: null,
     };
     const batchId = `${SOURCE}-${requestData.sourceRef.slice(0, 48)}`;
     await connection.execute(
       `INSERT INTO invitations
-       (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at, issue_source, source_ref, code_ciphertext)
-       VALUES (?, ?, ?, 1, ?, UTC_TIMESTAMP(3), ?, ?, ?, ?)`,
-      [invitation.id, invitation.userId, batchId, invitation.codeHash, invitation.expiresAt, SOURCE, requestData.sourceRef, invitation.codeCiphertext],
+       (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at, account_ttl_minutes, issue_source, source_ref, code_ciphertext)
+       VALUES (?, ?, ?, 1, ?, UTC_TIMESTAMP(3), ?, ?, ?, ?, ?)`,
+      [invitation.id, invitation.userId, batchId, invitation.codeHash, invitation.expiresAt, invitation.accountTtlMinutes, SOURCE, requestData.sourceRef, invitation.codeCiphertext],
     );
     await connection.execute(
       "INSERT INTO audit_events (id, actor_type, action, target_id, metadata, created_at) VALUES (?, 'admin', 'invitation.issued', ?, ?, UTC_TIMESTAMP(3))",
-      [randomUUID(), invitation.id, JSON.stringify({ source: SOURCE, sourceRefHash: requestData.sourceRef })],
+      [randomUUID(), invitation.id, JSON.stringify({ source: SOURCE, sourceRefHash: requestData.sourceRef, accountTtlMinutes: invitation.accountTtlMinutes })],
     );
     await connection.commit();
     return issueResponse(invitation, false);
@@ -176,7 +191,7 @@ export async function POST(request: Request): Promise<Response> {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "ER_DUP_ENTRY") {
       try {
         const existing = await findIssuedInvitation(connection, requestData.sourceRef);
-        if (existing && existing.userId === requestData.userId) {
+        if (existing && existing.userId === requestData.userId && existing.accountTtlMinutes === requestData.accountTtlMinutes) {
           await connection.commit();
           return issueResponse(existing, true);
         }

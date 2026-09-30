@@ -22,6 +22,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
     const [rows] = await getPool().execute<RowDataPacket[]>(
       `SELECT id, batch_id AS batchId, ordinal, issue_source AS issueSource,
               created_at AS createdAt, expires_at AS expiresAt,
+              account_ttl_minutes AS accountTtlMinutes,
               redeemed_at AS redeemedAt, revoked_at AS revokedAt, code_ciphertext AS codeCiphertext
        FROM invitations WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 100`,
       [userId],
@@ -39,6 +40,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
         issueSource: row.issueSource,
         createdAt: row.createdAt,
         expiresAt: row.expiresAt,
+        accountTtlMinutes: row.accountTtlMinutes,
         redeemedAt: row.redeemedAt,
         revokedAt: row.revokedAt,
         inviteCode: code,

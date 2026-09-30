@@ -19,6 +19,8 @@ export async function GET(request: Request): Promise<Response> {
     );
     const [rows] = await getPool().execute<RowDataPacket[]>(
       `SELECT u.id, u.created_at AS createdAt, u.disabled_at AS disabledAt,
+              u.total_job_limit AS totalJobLimit, u.daily_job_limit AS dailyJobLimit,
+              u.account_expires_at AS accountExpiresAt,
               (SELECT COUNT(*) FROM invitations i WHERE i.user_id = u.id) AS invitationCount,
               (SELECT COUNT(*) FROM jobs j WHERE j.user_id = u.id) AS jobCount
        FROM users u WHERE (? = '' OR u.id LIKE ?)

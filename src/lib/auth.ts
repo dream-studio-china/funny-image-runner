@@ -54,32 +54,56 @@ export async function redeemInvitation(code: string): Promise<{ userId: string; 
     await connection.beginTransaction();
     const [rows] = await connection.execute<RowDataPacket[]>(
       `SELECT i.id, i.user_id AS userId, i.redeemed_at AS redeemedAt, i.revoked_at AS revokedAt,
-              i.expires_at AS inviteExpiresAt, u.disabled_at AS disabledAt
+              i.expires_at AS inviteExpiresAt, i.account_ttl_minutes AS accountTtlMinutes,
+              u.disabled_at AS disabledAt, u.account_expires_at AS accountExpiresAt,
+              u.account_expiry_initialized AS accountExpiryInitialized
        FROM invitations i JOIN users u ON u.id = i.user_id
        WHERE i.code_hash = ? FOR UPDATE`,
       [hashSecret(normalized)],
     );
     const invitation = rows[0];
     const currentTime = new Date();
-    if (!invitation || invitation.revokedAt || invitation.disabledAt || (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime)) {
+    if (!invitation || invitation.revokedAt || invitation.disabledAt ||
+        (invitation.inviteExpiresAt && new Date(invitation.inviteExpiresAt) <= currentTime) ||
+        (invitation.accountExpiresAt && new Date(invitation.accountExpiresAt) <= currentTime)) {
       throw new Error("INVITATION_INVALID");
     }
 
-    await connection.execute(
-      "UPDATE invitations SET redeemed_at = COALESCE(redeemed_at, UTC_TIMESTAMP(3)) WHERE id = ? AND revoked_at IS NULL",
-      [invitation.id],
-    );
+    let accountExpiresAt = invitation.accountExpiresAt ? new Date(invitation.accountExpiresAt) : null;
+    if (!invitation.accountExpiryInitialized) {
+      const accountTtlMinutes = invitation.accountTtlMinutes === null ? null : Number(invitation.accountTtlMinutes);
+      accountExpiresAt = accountTtlMinutes === null ? null : new Date(currentTime.getTime() + accountTtlMinutes * 60_000);
+      await connection.execute(
+        "UPDATE users SET account_expires_at = ?, account_expiry_initialized = 1 WHERE id = ? AND account_expiry_initialized = 0",
+        [accountExpiresAt, invitation.userId],
+      );
+    }
+    const sessionExpiresAt = accountExpiresAt && accountExpiresAt < expiresAt ? accountExpiresAt : expiresAt;
+
+    if (!invitation.accountExpiryInitialized) {
+      // Keep the reusable login link valid for the lifetime of the account, not just
+      // the pre-redemption invitation window. This lets users renew 30-day sessions.
+      await connection.execute(
+        "UPDATE invitations SET redeemed_at = COALESCE(redeemed_at, UTC_TIMESTAMP(3)), expires_at = ? WHERE id = ? AND revoked_at IS NULL",
+        [accountExpiresAt, invitation.id],
+      );
+    } else {
+      await connection.execute(
+        "UPDATE invitations SET redeemed_at = COALESCE(redeemed_at, UTC_TIMESTAMP(3)) WHERE id = ? AND revoked_at IS NULL",
+        [invitation.id],
+      );
+    }
 
     await connection.execute(
       "INSERT INTO sessions (id, user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, UTC_TIMESTAMP(3), ?)",
-      [sessionId, invitation.userId, hashSecret(token), expiresAt],
+      [sessionId, invitation.userId, hashSecret(token), sessionExpiresAt],
     );
     await connection.execute(
       "INSERT INTO audit_events (id, actor_type, actor_id, action, target_id, metadata, created_at) VALUES (?, 'user', ?, ?, ?, ?, UTC_TIMESTAMP(3))",
       [randomUUID(), invitation.userId, invitation.redeemedAt ? "invitation.reused" : "invitation.redeemed", invitation.id, JSON.stringify({ sessionId })],
     );
     await connection.commit();
-    return { userId: invitation.userId as string, token, expiresAt };
+    return { userId: invitation.userId as string, token, expiresAt: sessionExpiresAt };
   } catch (error) {
     await connection.rollback();
     throw error;
@@ -95,6 +119,7 @@ export async function getSessionUser(cookieHeader: string | null): Promise<{ id:
     `SELECT u.id
      FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > UTC_TIMESTAMP(3) AND u.disabled_at IS NULL
+       AND (u.account_expires_at IS NULL OR u.account_expires_at > UTC_TIMESTAMP(3))
      LIMIT 1`,
     [hashSecret(token)],
   );

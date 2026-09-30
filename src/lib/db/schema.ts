@@ -19,6 +19,17 @@ export const users = mysqlTable("users", {
   id: varchar("id", { length: 64 }).primaryKey(),
   createdAt: createdAt(),
   disabledAt: datetime("disabled_at", { mode: "date", fsp: 3 }),
+  totalJobLimit: int("total_job_limit"),
+  dailyJobLimit: int("daily_job_limit"),
+  accountExpiresAt: datetime("account_expires_at", { mode: "date", fsp: 3 }),
+  accountExpiryInitialized: boolean("account_expiry_initialized").notNull().default(false),
+});
+
+export const systemSettings = mysqlTable("system_settings", {
+  id: int("id").primaryKey().default(1),
+  totalJobLimit: int("total_job_limit"),
+  dailyJobLimit: int("daily_job_limit").notNull().default(10),
+  updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
 });
 
 export const invitations = mysqlTable("invitations", {
@@ -29,6 +40,7 @@ export const invitations = mysqlTable("invitations", {
   codeHash: char("code_hash", { length: 64 }).notNull(),
   createdAt: createdAt(),
   expiresAt: datetime("expires_at", { mode: "date", fsp: 3 }),
+  accountTtlMinutes: int("account_ttl_minutes"),
   redeemedAt: datetime("redeemed_at", { mode: "date", fsp: 3 }),
   revokedAt: datetime("revoked_at", { mode: "date", fsp: 3 }),
   issueSource: varchar("issue_source", { length: 32 }),

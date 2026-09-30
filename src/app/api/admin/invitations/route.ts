@@ -14,6 +14,7 @@ export async function GET(request: Request): Promise<Response> {
     const [rows] = await getPool().execute<RowDataPacket[]>(
       `SELECT id, user_id AS userId, batch_id AS batchId, ordinal, issue_source AS issueSource,
               source_ref AS sourceRefHash, created_at AS createdAt, expires_at AS expiresAt,
+              account_ttl_minutes AS accountTtlMinutes,
               redeemed_at AS redeemedAt, revoked_at AS revokedAt
        FROM invitations ORDER BY created_at DESC, id DESC LIMIT ${limit}`,
       [],

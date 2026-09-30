@@ -118,11 +118,21 @@ export async function POST(request: Request): Promise<Response> {
 
     await connection.beginTransaction();
     transactionOpen = true;
-    const [userRows] = await connection.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND disabled_at IS NULL FOR UPDATE", [user.id]);
+    const [userRows] = await connection.execute<RowDataPacket[]>(
+      `SELECT id, account_expires_at AS accountExpiresAt, total_job_limit AS totalJobLimit,
+              daily_job_limit AS dailyJobLimit
+       FROM users WHERE id = ? AND disabled_at IS NULL FOR UPDATE`,
+      [user.id],
+    );
     if (!userRows[0]) {
       await connection.rollback();
       transactionOpen = false;
       return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    if (userRows[0].accountExpiresAt && new Date(userRows[0].accountExpiresAt) <= new Date()) {
+      await connection.rollback();
+      transactionOpen = false;
+      return jsonResponse({ error: "account_expired" }, 403);
     }
     const retried = await findIdempotentJob(connection, user.id, body.idempotencyKey);
     if (retried) {
@@ -140,11 +150,27 @@ export async function POST(request: Request): Promise<Response> {
       transactionOpen = false;
       return jsonResponse({ error: "active_job_limit" }, 429);
     }
+    await connection.execute("INSERT INTO system_settings (id, total_job_limit, daily_job_limit) VALUES (1, NULL, 10) ON DUPLICATE KEY UPDATE id = id");
+    const [settingsRows] = await connection.execute<RowDataPacket[]>(
+      "SELECT total_job_limit AS totalJobLimit, daily_job_limit AS dailyJobLimit FROM system_settings WHERE id = 1",
+    );
+    const settings = settingsRows[0] ?? { totalJobLimit: null, dailyJobLimit: 10 };
+    const totalJobLimit = userRows[0].totalJobLimit === null ? settings.totalJobLimit : userRows[0].totalJobLimit;
+    const dailyJobLimit = userRows[0].dailyJobLimit === null ? Number(settings.dailyJobLimit ?? 10) : Number(userRows[0].dailyJobLimit);
+    const [totalRows] = await connection.execute<RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM jobs WHERE user_id = ?",
+      [user.id],
+    );
+    if (totalJobLimit !== null && Number(totalRows[0]?.total ?? 0) >= Number(totalJobLimit)) {
+      await connection.rollback();
+      transactionOpen = false;
+      return jsonResponse({ error: "total_job_limit" }, 429);
+    }
     const [dailyRows] = await connection.execute<RowDataPacket[]>(
       "SELECT COUNT(*) AS total FROM jobs WHERE user_id = ? AND created_at >= UTC_DATE()",
       [user.id],
     );
-    if (Number(dailyRows[0]?.total ?? 0) >= 10) {
+    if (Number(dailyRows[0]?.total ?? 0) >= dailyJobLimit) {
       await connection.rollback();
       transactionOpen = false;
       return jsonResponse({ error: "daily_job_limit" }, 429);

@@ -110,7 +110,7 @@ export async function POST(request: Request): Promise<Response> {
         continue;
       }
       await connection.execute(
-        "INSERT INTO invitations (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at, code_ciphertext) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?, ?)",
+        "INSERT INTO invitations (id, user_id, batch_id, ordinal, code_hash, created_at, expires_at, account_ttl_minutes, code_ciphertext) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3), ?, 1440, ?)",
         [randomUUID(), item.userId, item.batchId, item.ordinal, item.codeHash, item.expiresAt, item.codeCiphertext],
       );
       await connection.execute(
