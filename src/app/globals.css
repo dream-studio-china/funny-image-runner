@@ -76,6 +76,7 @@ button:disabled{cursor:not-allowed}
 .upload-zone{position:relative;border:1.5px dashed #d5c6de;border-radius:18px;background:#f6f2f8;transition:border-color .2s,background .2s;overflow:hidden}
 .upload-zone.is-dragging{background:#eee5f8;border-color:var(--purple)}
 .upload-empty{width:100%;min-height:245px;display:flex;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:25px}
+.upload-empty{cursor:pointer}.upload-empty.is-disabled{cursor:not-allowed;opacity:.7}.upload-file-input{position:absolute;inset:0;z-index:2;width:100%;height:100%;opacity:0;cursor:pointer}.upload-file-input:disabled{cursor:not-allowed}
 .upload-icon{width:65px;height:65px;border-radius:18px;background:#eee2f6;color:var(--purple);display:grid;place-items:center;margin-bottom:17px;transform:rotate(-7deg)}.upload-icon svg{transform:rotate(7deg)}
 .upload-empty strong{font-family:var(--serif);font-size:20px;font-weight:900}.upload-empty strong span{color:var(--purple);font-family:Arial,sans-serif}
 .upload-subline{font-size:12px;color:#8f8992;margin-top:9px}.upload-formats{margin-top:17px;font-size:10px;font-weight:700;letter-spacing:.1em;color:#aea1ae}.upload-formats span{margin:0 6px}

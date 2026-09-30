@@ -553,14 +553,14 @@ export default function Studio() {
 
             <div className="step-block" id="upload">
               <div className="step-header"><div className="step-number">01</div><div><h3>先放一张照片</h3><p>有故事的画面，从你手里的这一张开始。</p></div><span className="step-side-label">START HERE ↗</span></div>
-              <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" className="sr-only" onChange={(event) => acceptFile(event.target.files?.[0])} aria-label="上传照片" />
-              <div
+               <div
                 className={`upload-zone ${isDragging ? "is-dragging" : ""} ${previewUrl ? "has-image" : ""}`}
                 onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }}
                 onDragLeave={(event) => { event.preventDefault(); setIsDragging(false); }}
                 onDrop={(event) => { event.preventDefault(); setIsDragging(false); acceptFile(event.dataTransfer.files[0]); }}
-              >
-                {previewUrl ? <div className="upload-preview"><div className="upload-image" role="img" aria-label="已上传照片预览" style={{ backgroundImage: `url("${previewUrl}")` }} /><div className="upload-preview-info"><span className="upload-ready"><Check size={14} /> 照片已就位</span><strong title={file?.name}>{file?.name}</strong><span>{file && (file.size / 1024 / 1024).toFixed(2)} MB · 仅在当前浏览器预览</span><div className="upload-preview-actions"><button type="button" onClick={() => inputRef.current?.click()}><RotateCcw size={16} /> 换一张</button><button type="button" onClick={removeFile}><X size={16} /> 移除</button></div></div></div> : <button type="button" className="upload-empty" onClick={() => inputRef.current?.click()} disabled={isPreparingImage}><span className="upload-icon"><ImagePlus size={28} strokeWidth={1.7} /></span><strong>{isPreparingImage ? "正在适配图片…" : <>点击上传你的照片 <span>↗</span></>}</strong><span className="upload-subline">或把图片拖到这里，开始一段奇妙旅程</span><span className="upload-formats">JPG、PNG、WEBP <span>·</span> 原图大小不限 · 超过 2M 像素自动转 JPG</span></button>}
+               >
+                 {!previewUrl && <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" className="upload-file-input" disabled={isPreparingImage} onChange={(event) => { acceptFile(event.target.files?.[0]); event.currentTarget.value = ""; }} aria-label="点击上传你的照片" />}
+                 {previewUrl ? <div className="upload-preview"><div className="upload-image" role="img" aria-label="已上传照片预览" style={{ backgroundImage: `url("${previewUrl}")` }} /><div className="upload-preview-info"><span className="upload-ready"><Check size={14} /> 照片已就位</span><strong title={file?.name}>{file?.name}</strong><span>{file && (file.size / 1024 / 1024).toFixed(2)} MB · 仅在当前浏览器预览</span><div className="upload-preview-actions"><button type="button" onClick={() => inputRef.current?.click()}><RotateCcw size={16} /> 换一张</button><button type="button" onClick={removeFile}><X size={16} /> 移除</button></div></div></div> : <div className={`upload-empty ${isPreparingImage ? "is-disabled" : ""}`}><span className="upload-icon"><ImagePlus size={28} strokeWidth={1.7} /></span><strong>{isPreparingImage ? "正在适配图片…" : <>点击上传你的照片 <span>↗</span></>}</strong><span className="upload-subline">或把图片拖到这里，开始一段奇妙旅程</span><span className="upload-formats">JPG、PNG、WEBP <span>·</span> 原图大小不限 · 超过 2M 像素自动转 JPG</span></div>}
                 <span className="upload-corner corner-tl" /><span className="upload-corner corner-br" />
               </div>
             </div>
