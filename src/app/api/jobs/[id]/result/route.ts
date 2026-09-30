@@ -26,7 +26,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
     );
     if (!jobs[0]) return jsonResponse({ error: "result_not_ready" }, 409);
     const [outputs] = await getPool().execute<RowDataPacket[]>(
-      "SELECT output_index AS index, object_key AS objectKey, content_type AS contentType FROM job_outputs WHERE job_id = ? ORDER BY output_index",
+      "SELECT output_index AS `index`, object_key AS objectKey, content_type AS contentType FROM job_outputs WHERE job_id = ? ORDER BY output_index",
       [id],
     );
     return jsonResponse({ results: outputs.map((output) => ({
