@@ -101,7 +101,35 @@ WORKER_TOKEN="<和 .env.local 里相同的值>" \
 npm run start:worker
 ```
 
-<sub>ComfyUI 在别的机器？把 `COMFY_BASE_URL` 换成它的内网/Tailscale 地址（例如 `http://100.78.52.73:8188`），**不要用公网地址**。Worker 只依赖 Node 内置模块，不用额外安装。</sub>
+<sub>ComfyUI 在别的机器？把 `COMFY_BASE_URL` 换成它的内网/Tailscale 地址（例如 `http://100.78.52.73:8188`），**不要用公网地址**。启动器会让这个地址绕过 HTTP 代理，网站和七牛流量仍走系统代理；启动命令前不要把 `http_proxy` / `https_proxy` 清空。</sub>
+
+如果 ComfyUI 服务器没有完整项目仓库，复制单文件 [`scripts/comfyui-worker-linux.sh`](scripts/comfyui-worker-linux.sh) 即可；服务器只需 Bash、curl、jq 和 file。它会保留系统代理给网站 API / 七牛使用，只把 `COMFY_BASE_URL` 加入 `NO_PROXY`。脚本从**进程环境变量**读取配置，不会读取项目的 `.env.local`。
+
+### 启动参数（环境变量）
+
+| 参数 | 必需 | 用途 | 示例/默认 |
+| --- | --- | --- | --- |
+| `WEB_API_BASE_URL` | 是 | Worker 连接的网站根地址，不要带 `/api` | 本地 `http://127.0.0.1:3000`；线上填 `https://你的域名` |
+| `WORKER_TOKEN` | 是 | Worker 与网站的共享密钥，两边必须完全一致 | 取自网站服务端 `.env.local` / Vercel 环境变量 |
+| `COMFY_BASE_URL` | 否 | ComfyUI 的 HTTP 地址 | 默认 `http://127.0.0.1:8188`；Tailscale 示例 `http://100.78.52.73:8188` |
+| `WORKER_ID` | 否 | 后台识别这台 Worker 的稳定 ID | 默认 `comfy-<主机名>` |
+| `WORKER_NAME` | 否 | 后台显示名称 | 默认等于 `WORKER_ID` |
+| `WORKER_POLL_INTERVAL_MS` | 否 | Node Worker 空队列轮询间隔 | 默认 `4000` 毫秒 |
+| `WORKER_POLL_INTERVAL_SEC` | 否 | Linux Shell Worker 空队列轮询间隔 | 默认 `4` 秒 |
+
+Linux 独立脚本启动示例（把密钥替换成网站上的**同一个** `WORKER_TOKEN`）：
+
+```bash
+export WEB_API_BASE_URL="https://你的域名"
+export WORKER_TOKEN="与网站服务端相同的密钥"
+export COMFY_BASE_URL="http://100.78.52.73:8188"
+export WORKER_ID="comfy-worker-01"       # 可选
+export WORKER_NAME="图像生成节点 01"        # 可选
+export WORKER_POLL_INTERVAL_SEC=4          # 可选
+./comfyui-worker-linux.sh
+```
+
+完整安装、代理和故障处理见 [Worker runbook](docs/runbooks/comfyui-worker.md)。
 
 然后用登录用户上传一张照片、选刚配好的风格、点“上传并创建任务”：
 

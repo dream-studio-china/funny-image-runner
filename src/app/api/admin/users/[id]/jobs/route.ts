@@ -24,7 +24,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
       `SELECT j.id, j.status, j.phase, j.attempts, j.preset_id AS presetId,
               j.preset_version AS presetVersion, j.parameters, j.error_code AS errorCode,
               j.created_at AS createdAt, j.updated_at AS updatedAt, j.finished_at AS finishedAt,
-              u.object_key AS inputKey, u.content_type AS inputContentType,
+              u.object_key AS inputKey, u.content_type AS inputContentType, u.deleted_at AS inputDeletedAt,
               u.declared_size AS inputSize, u.created_at AS inputCreatedAt
        FROM jobs j JOIN uploads u ON u.id = j.upload_id AND u.user_id = j.user_id
        WHERE j.user_id = ? ORDER BY j.created_at DESC, j.id DESC LIMIT ${limit}`,
@@ -36,7 +36,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
     const [outputs] = await getPool().execute<RowDataPacket[]>(
       `SELECT job_id AS jobId, output_index AS outputIndex, object_key AS objectKey,
               content_type AS contentType, size FROM job_outputs
-       WHERE job_id IN (${placeholders}) ORDER BY job_id, output_index`,
+       WHERE deleted_at IS NULL AND job_id IN (${placeholders}) ORDER BY job_id, output_index`,
       ids,
     );
     const outputsByJob = new Map<string, RowDataPacket[]>();
@@ -56,7 +56,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       finishedAt: row.finishedAt,
-      input: { url: createPrivateDownloadUrl(row.inputKey as string), contentType: row.inputContentType, size: row.inputSize, createdAt: row.inputCreatedAt },
+      input: { url: row.inputDeletedAt ? null : createPrivateDownloadUrl(row.inputKey as string), contentType: row.inputContentType, size: row.inputSize, createdAt: row.inputCreatedAt, deleted: Boolean(row.inputDeletedAt) },
       outputs: (outputsByJob.get(row.id as string) ?? []).map((output) => ({
         index: output.outputIndex,
         url: createPrivateDownloadUrl(output.objectKey as string),

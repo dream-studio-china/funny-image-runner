@@ -97,6 +97,7 @@ export const presetAssets = mysqlTable("preset_assets", {
   contentType: varchar("content_type", { length: 100 }).notNull(),
   size: int("size").notNull(),
   createdAt: createdAt(),
+  deletedAt: datetime("deleted_at", { mode: "date", fsp: 3 }),
 }, (table) => [uniqueIndex("preset_assets_object_key_uq").on(table.objectKey)]);
 
 export const presetVersions = mysqlTable("preset_versions", {
@@ -148,6 +149,7 @@ export const uploads = mysqlTable("uploads", {
   expiresAt: datetime("expires_at", { mode: "date", fsp: 3 }).notNull(),
   consumedJobId: char("consumed_job_id", { length: 36 }),
   createdAt: createdAt(),
+  deletedAt: datetime("deleted_at", { mode: "date", fsp: 3 }),
 }, (table) => [
   uniqueIndex("uploads_object_key_uq").on(table.objectKey),
   uniqueIndex("uploads_consumed_job_uq").on(table.consumedJobId),
@@ -187,6 +189,7 @@ export const jobOutputs = mysqlTable("job_outputs", {
   objectKey: varchar("object_key", { length: 512 }).notNull(),
   contentType: varchar("content_type", { length: 100 }).notNull(),
   size: int("size").notNull(),
+  deletedAt: datetime("deleted_at", { mode: "date", fsp: 3 }),
 }, (table) => [
   uniqueIndex("job_outputs_job_index_uq").on(table.jobId, table.index),
   uniqueIndex("job_outputs_object_key_uq").on(table.objectKey),

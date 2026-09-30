@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "start:worker": "node scripts/comfyui-worker.mjs",
+    "start:worker": "node scripts/start-comfyui-worker.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

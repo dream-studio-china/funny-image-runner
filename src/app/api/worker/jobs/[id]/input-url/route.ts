@@ -21,7 +21,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       if (!job) { await connection.rollback(); return jsonResponse({ error: "lease_invalid" }, 409); }
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT u.object_key AS objectKey,u.content_type AS contentType,u.declared_size AS size
-         FROM uploads u JOIN jobs j ON j.upload_id=u.id WHERE j.id=? AND u.consumed_job_id=j.id LIMIT 1`, [id],
+         FROM uploads u JOIN jobs j ON j.upload_id=u.id WHERE j.id=? AND u.consumed_job_id=j.id AND u.deleted_at IS NULL LIMIT 1`, [id],
       );
       await connection.commit();
       if (!rows[0]) return jsonResponse({ error: "input_not_found" }, 404);

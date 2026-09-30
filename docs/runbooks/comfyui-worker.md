@@ -47,7 +47,7 @@ openssl rand -hex 32
 | `COMFY_BASE_URL` | 否 | 默认 `http://127.0.0.1:8188`；远端就填内网/Tailscale 地址，**不要填公网** |
 | `WORKER_POLL_INTERVAL_MS` | 否 | 空队列轮询间隔，默认 4000ms |
 
-<sub>用 systemd、容器 secret 或权限 600 的环境文件提供这些值；换密钥后两边一起换并重启 Worker。日志里只会有 job_id 和阶段，看不到密钥和图片，这是设计。</sub>
+<sub>仓库内 Node Worker 要求 Node.js 22.21+。Linux 独立 shell Worker 不需要 Node，但需要 Bash、curl、jq、file。两种版本都会把 `COMFY_BASE_URL` 主机加入 `NO_PROXY`：云端 API 和七牛走系统代理，ComfyUI/Tailscale 直连。**不要把 `http_proxy`、`https_proxy` 设为空**，否则访问七牛可能直连超时。用 systemd、容器 secret 或权限 600 的环境文件提供变量；换密钥后两边一起换并重启。日志会输出结构化 JSON：Worker ID、job_id、阶段、输入/输出 MIME 与字节数、HTTP 状态和错误码；不会记录 bearer、签名 URL、prompt 原文或图片内容。</sub>
 
 ## 3. 配 Workflow（后台点点就行）
 
@@ -83,7 +83,31 @@ openssl rand -hex 32
 
 ## 4. 启动与验证
 
+### 推荐：Linux 独立脚本（ComfyUI 服务器无需完整项目）
+
+把单文件 `scripts/comfyui-worker-linux.sh` 复制到 ComfyUI 服务器；不需要 clone 仓库、npm install 或部署 Next.js。
+
 ```bash
+# Ubuntu/Debian：仅首次安装运行依赖
+sudo apt-get update && sudo apt-get install -y curl jq file
+chmod +x comfyui-worker-linux.sh
+
+export WEB_API_BASE_URL="https://你的站点域名"
+export WORKER_TOKEN="与网站服务端完全相同的密钥"
+export COMFY_BASE_URL="http://100.78.52.73:8188"  # 换成此机可达的 ComfyUI/Tailscale 地址
+export WORKER_ID="comfy-worker-01"                # 可选；固定名称便于后台识别
+export WORKER_NAME="图像生成节点 01"                 # 可选
+./comfyui-worker-linux.sh
+```
+
+### 可选：完整项目内运行 Node Worker
+
+如果 ComfyUI 服务器本来就有完整项目和 Node.js：
+
+```bash
+WEB_API_BASE_URL="https://你的站点域名" \
+WORKER_TOKEN="与网站服务端完全相同的密钥" \
+COMFY_BASE_URL="http://100.78.52.73:8188" \
 npm run start:worker
 ```
 
@@ -103,6 +127,7 @@ npm run start:worker
 | `comfy_http_4xx/5xx`、`generation_failed` | ComfyUI 拒了：查节点映射、模型/插件装没装、显存够不够 |
 | `generation_timeout` | 20 分钟没出图：ComfyUI 卡住或队列太长，去 ComfyUI 那边看 |
 | `execution_uncertain` | **可能已提交但 ID 没记下**：先查 ComfyUI `/queue` 和 `/history/{id}` 核实，确认没跑再让用户新建任务；**不要直接重试** |
+| `download_http_560` 或输入下载超时 | Worker 到七牛私有下载域名的直连链路不通/被重置。保留 `https_proxy` 等系统代理；脚本会自动把 ComfyUI/Tailscale 主机加入 `NO_PROXY`，不要用清空全部代理变量的方式让 ComfyUI 直连 |
 | `attempt_timeout` / `worker_attempt_limit` | 任务超时或重试超 3 次：看 Worker 日志定位哪一步慢 |
 | `lease_invalid` | 租约丢了（别人接手了）：当前 Worker 会停手，这是保护机制 |
 
@@ -117,6 +142,7 @@ npm run start:worker
 
 ## 6. 本地联调备忘（Tailscale 远端 ComfyUI）
 
-- `COMFY_BASE_URL=http://100.78.52.73:8188` 这类内网地址直接配就行，Worker 不关心是本机还是远端。
+- `COMFY_BASE_URL=http://100.78.52.73:8188` 这类内网地址直接配即可；启动器会自动把它加进 `NO_PROXY`，ComfyUI/Tailscale 请求不经过代理。
+- 不要运行 `all_proxy= http_proxy= https_proxy= npm run start:worker` 这种清空代理的命令。保留系统代理，让网站 API/七牛流量走代理。
 - 先 `curl` 一下远端的 `/system_stats` 和 `/queue` 确认通，再启动 Worker。
 - 本地网站用 `http://127.0.0.1:3000`，Worker 配 `WEB_API_BASE_URL` 指向它。

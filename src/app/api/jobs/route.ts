@@ -96,13 +96,14 @@ export async function POST(request: Request): Promise<Response> {
     if (existing) return existing.requestHash === requestHash ? responseFor(existing, 200) : jsonResponse({ error: "idempotency_conflict" }, 409);
 
     const [uploads] = await connection.execute<RowDataPacket[]>(
-      `SELECT id, object_key AS objectKey, content_type AS contentType, declared_size AS declaredSize,
-              expires_at AS expiresAt, consumed_job_id AS consumedJobId
+      `SELECT id, object_key AS objectKey, content_type AS contentType, declared_size AS declaredSize, deleted_at AS deletedAt,
+               expires_at AS expiresAt, consumed_job_id AS consumedJobId
        FROM uploads WHERE id = ? AND user_id = ? LIMIT 1`,
       [body.uploadId, user.id],
     );
     const upload = uploads[0];
     if (!upload) return jsonResponse({ error: "upload_not_found" }, 404);
+    if (upload.deletedAt) return jsonResponse({ error: "upload_deleted" }, 410);
     if (upload.consumedJobId) return jsonResponse({ error: "upload_already_used" }, 409);
     if (new Date(upload.expiresAt) <= new Date()) return jsonResponse({ error: "upload_expired" }, 410);
 

@@ -38,12 +38,15 @@ async function json(response) {
   return data;
 }
 async function api(path, method = "GET", body, signal) {
-  const response = await fetch(`${WEB}${path}`, {
-    method, signal: signal ?? makeAbort(),
-    headers: { authorization: `Bearer ${TOKEN}`, ...(body ? { "content-type": "application/json" } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {}), cache: "no-store",
-  });
-  return response;
+  try {
+    return await fetch(`${WEB}${path}`, {
+      method, signal: signal ?? makeAbort(),
+      headers: { authorization: `Bearer ${TOKEN}`, ...(body ? { "content-type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}), cache: "no-store",
+    });
+  } catch {
+    throw Object.assign(new Error("cloud_api_network_error"), { code: "cloud_api_network_error" });
+  }
 }
 async function apiJson(path, method, body, signal) { return json(await api(path, method, body, signal)); }
 async function workerStatus(state = workerState, error = lastError, jobId = currentJobId) {
@@ -61,7 +64,9 @@ function stopIfUnauthorized(error) {
   }
 }
 async function comfy(path, options = {}) {
-  const response = await fetch(`${COMFY}${path}`, { ...options, signal: options.signal ?? makeAbort() });
+  let response;
+  try { response = await fetch(`${COMFY}${path}`, { ...options, signal: options.signal ?? makeAbort() }); }
+  catch { throw Object.assign(new Error("comfy_network_error"), { code: "comfy_network_error" }); }
   if (!response.ok) throw Object.assign(new Error("comfy_error"), { code: `comfy_http_${response.status}` });
   return response;
 }
@@ -100,7 +105,9 @@ async function uploadMultipart(url, fields, bytes, contentType, filename, signal
   return response;
 }
 async function download(url, signal) {
-  const response = await fetch(url, { signal: signal ?? makeAbort(60_000) });
+  let response;
+  try { response = await fetch(url, { signal: signal ?? makeAbort(60_000) }); }
+  catch { throw Object.assign(new Error("input_download_network_error"), { code: "input_download_network_error" }); }
   if (!response.ok) throw Object.assign(new Error("download_failed"), { code: `download_http_${response.status}` });
   const type = (response.headers.get("content-type") ?? "").split(";")[0].toLowerCase();
   const declared = Number(response.headers.get("content-length") ?? 0);

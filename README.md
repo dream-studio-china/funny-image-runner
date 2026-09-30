@@ -29,7 +29,7 @@ npm run db:migrate
 npm run dev                  # http://localhost:3000
 ```
 
-检查与常用命令：`npm run build`、`npm run lint`、`npm run typecheck`、`npm run start:worker`（启动 ComfyUI Worker）。
+检查与常用命令：`npm run build`、`npm run lint`、`npm run typecheck`。Worker 可在完整项目中运行 `npm run start:worker`；没有项目仓库的 Linux ComfyUI 主机可直接复制单文件 [`scripts/comfyui-worker-linux.sh`](scripts/comfyui-worker-linux.sh) 运行（仅依赖 Bash、curl、jq、file）。
 
 ## 功能地图
 
@@ -38,7 +38,7 @@ npm run dev                  # http://localhost:3000
 | 邀请制登录（可重复登录、自动签发 API） | ✅ | [签发 runbook](docs/runbooks/issue-invitation-links.md) |
 | 七牛直传、任务队列、结果查看 | ✅ | [七牛 runbook](docs/runbooks/qiniu-storage-and-jobs.md) |
 | 后台：邀请码、用户、分类、预设、Workflow 配置 | ✅ | [后台 runbook](docs/runbooks/admin-console.md) |
-| ComfyUI Worker：领任务、生成、回传 | ✅ | [Worker runbook](docs/runbooks/comfyui-worker.md) |
+| ComfyUI Worker：Node 版和独立 Linux Shell 版 | ✅ | [Worker runbook](docs/runbooks/comfyui-worker.md) |
 | 对象定期清理、Worker 在线状态展示 | ⬜ 待做 | 设计文档有约束说明 |
 
 ## 环境变量速查

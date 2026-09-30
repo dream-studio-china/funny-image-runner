@@ -87,6 +87,20 @@ export function createPrivateDownloadUrl(key: string, ttlSeconds = 300): string 
   return `${unsignedUrl}&token=${downloadToken}`;
 }
 
+export async function deletePrivateObject(key: string): Promise<"deleted" | "not_found"> {
+  const settings = config();
+  const path = `/delete/${urlSafeBase64(`${settings.bucket}:${key}`)}`;
+  const response = await fetch(`https://rs.qiniu.com${path}`, {
+    method: "POST",
+    headers: { authorization: `QBox ${settings.accessKey}:${signature(settings.secretKey, `${path}\n`)}` },
+    signal: AbortSignal.timeout(10_000),
+    cache: "no-store",
+  });
+  if (response.status === 612 || response.status === 404) return "not_found";
+  if (!response.ok) throw new Error("QINIU_DELETE_FAILED");
+  return "deleted";
+}
+
 export function isAllowedImageType(value: string): value is AllowedImageType {
   return (ALLOWED_IMAGE_TYPES as readonly string[]).includes(value);
 }
