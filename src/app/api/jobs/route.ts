@@ -118,6 +118,12 @@ export async function POST(request: Request): Promise<Response> {
 
     await connection.beginTransaction();
     transactionOpen = true;
+    const [presetRows] = await connection.execute<RowDataPacket[]>("SELECT id FROM presets WHERE id = ? FOR UPDATE", [preset.id]);
+    if (!presetRows[0]) {
+      await connection.rollback();
+      transactionOpen = false;
+      return jsonResponse({ error: "preset_not_found" }, 409);
+    }
     const [userRows] = await connection.execute<RowDataPacket[]>(
       `SELECT id, account_expires_at AS accountExpiresAt, total_job_limit AS totalJobLimit,
               daily_job_limit AS dailyJobLimit

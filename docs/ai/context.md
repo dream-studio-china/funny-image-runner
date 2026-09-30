@@ -4,7 +4,7 @@
 
 ## 项目当前状态
 
-- 仓库：`funny-image-runner`，Git 分支 `main`；最近提交 `16367ba`（admin image management and worker proxy support）已推送至 `origin/main`。账户配额/有效期功能正在工作区开发中，尚未提交；接续时运行 `git status`/`git log` 确认。
+- 仓库：`funny-image-runner`，Git 分支 `main`；最近已推送提交包含 `415810b`（用户配额与账户期限）和 `f9d7da9`（后台 Lightbox 尺寸修复）。分类/预设删除及可空分类迁移 `0010` 正在工作区开发中，尚未提交；接续时运行 `git status`/`git log` 确认。
 - Web：Next.js App Router + React + TypeScript + Tailwind CSS，Vercel 部署；不是 Vite 工程。
 - 数据：阿里云 RDS MySQL，Drizzle ORM + mysql2；本地开发使用 `.env.local`，已应用到仓库最新 schema 的 migration 应在继续改 DB 前确认。
 - 存储：七牛 Kodo 私有空间，浏览器直传；AK/SK 只允许在服务端环境变量。
@@ -40,10 +40,11 @@ ComfyUI 同机 Worker ──127.0.0.1:8188──> 本地 ComfyUI
 ## 管理后台 `/admin`
 
 - 登录：服务端 `ADMIN_API_TOKEN`；不要将 token 放进客户端代码、公开日志或发给买家。管理员 API 同时支持 bearer（CLI/可信发货服务）和受保护的管理员 cookie 会话。
-- 已实现：邀请码签发、列表、撤销及查看 code；用户搜索、启停、查看邀请与任务；分类、展示图、预设、工作流配置维护；ComfyUI/Worker 预留说明和 Worker 状态显示。
+- 已实现：邀请码签发、列表、撤销及查看 code；用户搜索、启停、查看邀请与任务；分类、展示图、预设、工作流配置维护（包含确认删除）；ComfyUI/Worker 预留说明和 Worker 状态显示。
 - 新增「账户配额」管理页：全局总任务默认上限（NULL=无限）和每日任务默认上限；用户个人总/每日上限可覆盖全局默认，留空继承默认，0 表示不可新建任务。总任务按所有既有任务计数（含失败），每日按 UTC 自然日计数。后台可直接设置用户精确失效时间或清空为无限。
 - 图片管理已实现于 `/admin`「图片管理」页和 `GET/DELETE /api/admin/images`：支持原图/生成结果/封面图库、按类型/用户/上传时间/文件大小筛选、排序分页、Lightbox 原图预览及用户/任务/风格/分类/Key/大小/MIME/时间等元数据查看；支持选择删除和按日期清理（单次最多 100 张）。
 - 图片删除会先删除七牛对象，再将 `uploads`、`job_outputs` 或 `preset_assets` 对应行标记 `deleted_at`，保留数据库记录用于任务历史与审计。正在运行任务使用的原图、仍被分类或预设引用的封面会拒绝/跳过删除；管理员 API 需认证并校验同源。删除后普通任务/Worker 结果和输入取图路径不再提供对象 URL。
+- 分类删除通过事务将关联预设的 `category_id` 置为 NULL 后删除分类；预设删除前锁定预设并拒绝仍有 queued/running job 的情况。删除预设会移除当前目录行但保留 `preset_versions` 不可变历史与已有任务；相同 ID 重建时版本号从历史最大值递增。系统默认分类 `general` 被保护，不允许删除。migration `0010_uncategorize_presets.sql` 将 `presets.category_id` 改为可空；公开预设列表仍会展示未分类预设。
 - 风格封面使用七牛展示图资产；工作流配置保存版本，预设版本会锁定 workflow 快照。不能将 workflow JSON、节点映射、additional JSON 下发给普通用户。
 - 管理员 CLI：`npm run invitations:create -- <batch-id> <user-id> [count] [ordinal-start]`。`INVITE_SEED` 仅放可信终端；`ADMIN_API_TOKEN`、`INVITATION_ENCRYPTION_KEY` 和 `APP_BASE_URL` 在发码客户端/服务端按 runbook 提供。
 
@@ -60,7 +61,7 @@ ComfyUI 同机 Worker ──127.0.0.1:8188──> 本地 ComfyUI
 MySQL schema 在 `src/lib/db/schema.ts`，Drizzle migrations 在 `drizzle/`：
 
 - 身份：`users`、`invitations`、`sessions`、`admin_sessions`、`auth_rate_limits`、`audit_events`、`system_settings`。`users` 存个人总/每日任务覆盖值、账户失效时间和首次有效期初始化标记；`invitations.account_ttl_minutes` 存首次登录后生效的账户期限（NULL=无限）。
-- 图片/生成：`uploads`、`jobs`、`job_outputs`；三类图片资产表（`uploads`、`job_outputs`、`preset_assets`）均含可空 `deleted_at` 软删除时间。migration `0008_image_deleted_at.sql` 已应用到当前本地 TiDB 测试库。账户配额/期限 migration `0009_user_limits_account_expiry.sql` 已应用到当前本地 TiDB 测试库；部署环境需单独确认 migration 状态。
+- 图片/生成：`uploads`、`jobs`、`job_outputs`；三类图片资产表（`uploads`、`job_outputs`、`preset_assets`）均含可空 `deleted_at` 软删除时间。migration `0008_image_deleted_at.sql` 已应用到当前本地 TiDB 测试库。账户配额/期限 migration `0009_user_limits_account_expiry.sql` 和可空分类 migration `0010_uncategorize_presets.sql` 也已应用到本地 TiDB 测试库；部署环境需单独确认 migration 状态。
 - 风格/工作流：`preset_categories`、`preset_assets`、`presets`、`workflow_configs`、`preset_versions`。
 - Worker 在线状态：`workers`。
 
@@ -90,4 +91,4 @@ npm run db:migrate
 curl --fail --silent --show-error http://localhost:3000/api/health
 ```
 
-账户配额/失效功能已经实现并通过 lint/typecheck/build，migration `0009` 已应用于当前本地 TiDB 测试库；仍需验证邀请首次兑换/无限期限和真实任务配额阻断。随后可继续验收图片管理：筛选/排序分页、Lightbox 元数据、日期清理上限、运行中任务原图保护、封面引用保护和任务历史呈现。最后用 QUICKSTART 完成邀请 → 登录 → 直传 → 创建队列任务 → Worker 真实出图闭环。对象定期清理仍有后续完善空间。详细操作参见 [QUICKSTART](../../QUICKSTART.md)、[设计索引](../design/README.md) 和 [runbook 索引](../runbooks/README.md)。
+分类/预设删除已经实现并通过 lint/typecheck/build；migration `0010` 已应用到当前本地 TiDB 测试库。继续验收删除确认、category deletion 对关联预设的未分类处理、运行中任务保护、删除后预设版本历史保留及同 ID 重新创建。默认分类 `general` 由 seed 逻辑维护，后台禁止删除。随后可继续完成账户期限/配额和图片管理的端到端验收，再用 QUICKSTART 验证真实任务闭环。对象定期清理仍有后续完善空间。详细操作参见 [QUICKSTART](../../QUICKSTART.md)、[设计索引](../design/README.md) 和 [runbook 索引](../runbooks/README.md)。

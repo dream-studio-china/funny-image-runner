@@ -1,4 +1,5 @@
 import { isAdminRequest } from "@/lib/admin-auth";
+import type { RowDataPacket } from "mysql2/promise";
 import { jsonResponse } from "@/lib/http";
 import { getPresetCategories, getStoredPresets, signedCover } from "@/lib/preset-store";
 import { getPool } from "@/lib/db";
@@ -14,7 +15,7 @@ export async function GET(request: Request): Promise<Response> {
     if (!await isAdminRequest(request)) return jsonResponse({ error: "unauthorized" }, 401);
     const presets = await getStoredPresets(true);
     const categories = await getPresetCategories(true);
-    return jsonResponse({ categories: categories.map(({coverKey,...category})=>({...category,coverAssetId:category.coverAssetId == null ? null : String(category.coverAssetId),image:signedCover(coverKey)})), presets: presets.map((preset) => ({
+    return jsonResponse({ categories: categories.map(({coverKey,...category})=>({...category,coverAssetId:category.coverAssetId == null ? null : String(category.coverAssetId),sortOrder:Number(category.sortOrder),enabled:Boolean(category.enabled),image:signedCover(coverKey)})), presets: presets.map((preset) => ({
       id: preset.id,
       version: preset.version,
       name: preset.name,
@@ -47,7 +48,7 @@ export async function POST(request: Request): Promise<Response> {
   try { if (!await isAdminRequest(request)) return jsonResponse({ error: "unauthorized" }, 401); } catch { return jsonResponse({ error: "service_unavailable" }, 503); }
   let body: unknown;
   try { body = await readJson(request, 200_000); } catch { return jsonResponse({ error: "invalid_json" }, 400); }
-  if (!isRecord(body) || typeof body.id !== "string" || !/^[a-z0-9][a-z0-9-]{1,79}$/.test(body.id) || typeof body.name !== "string" || !body.name.trim() || body.name.length > 100 || typeof body.categoryId !== "string" || typeof body.coverAssetId !== "string" || !Array.isArray(body.moods) || body.moods.length < 1 || body.moods.length > 8 || body.moods.some((mood) => typeof mood !== "string" || !mood.trim() || mood.length > 40)) return jsonResponse({ error: "invalid_preset" }, 400);
+  if (!isRecord(body) || typeof body.id !== "string" || !/^[a-z0-9][a-z0-9-]{1,79}$/.test(body.id) || typeof body.name !== "string" || !body.name.trim() || body.name.length > 100 || !(body.categoryId === null || (typeof body.categoryId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(body.categoryId))) || typeof body.coverAssetId !== "string" || !Array.isArray(body.moods) || body.moods.length < 1 || body.moods.length > 8 || body.moods.some((mood) => typeof mood !== "string" || !mood.trim() || mood.length > 40)) return jsonResponse({ error: "invalid_preset" }, 400);
   if (body.enabled === true && typeof body.workflowConfigId !== "string") return jsonResponse({ error: "workflow_config_required" }, 400);
   const workflow = body.workflow;
   let nodeMapping = body.nodeMapping;
@@ -82,12 +83,16 @@ export async function POST(request: Request): Promise<Response> {
       nodeMapping = typeof config.nodeMapping === "string" ? JSON.parse(config.nodeMapping) as unknown : config.nodeMapping;
       configVersion = Number(config.version);
     }
-    const [cats] = await conn.execute("SELECT id FROM preset_categories WHERE id=?", [body.categoryId]);
-    if (!(cats as unknown[]).length) { await conn.rollback(); return jsonResponse({ error: "category_not_found" }, 400); }
+    if (body.categoryId !== null) {
+      const [cats] = await conn.execute("SELECT id FROM preset_categories WHERE id=? FOR UPDATE", [body.categoryId]);
+      if (!(cats as unknown[]).length) { await conn.rollback(); return jsonResponse({ error: "category_not_found" }, 400); }
+    }
     const [assets] = await conn.execute("SELECT id FROM preset_assets WHERE id=?", [body.coverAssetId]);
     if (!(assets as unknown[]).length) { await conn.rollback(); return jsonResponse({ error: "asset_not_found" }, 400); }
-    await conn.execute("INSERT INTO presets (id,version,name,subtitle,description,image,tint,accent,tag,prompt_label,prompt_placeholder,moods,enabled,category_id,cover_asset_id,updated_at) VALUES (?,1,?,?,?,?,?,?,?,?,?,?,?, ?,?,UTC_TIMESTAMP(3))", [body.id, body.name.trim(), typeof body.subtitle === "string" ? body.subtitle.slice(0,100) : "", typeof body.description === "string" ? body.description.slice(0,500) : "", typeof body.image === "string" ? body.image : "", typeof body.tint === "string" ? body.tint : "#eeeeee", typeof body.accent === "string" ? body.accent : "#333333", typeof body.tag === "string" ? body.tag.slice(0,40) : "", typeof body.promptLabel === "string" ? body.promptLabel.slice(0,100) : "", typeof body.promptPlaceholder === "string" ? body.promptPlaceholder.slice(0,200) : "", JSON.stringify(Array.isArray(body.moods) ? body.moods.filter((item): item is string => typeof item === "string").slice(0,8) : []), Boolean(body.enabled), body.categoryId, typeof body.coverAssetId === "string" ? body.coverAssetId : null]);
-    await conn.execute("INSERT INTO preset_versions (preset_id,version,workflow,prompt,negative_prompt,additional,node_mapping,workflow_config_id,workflow_config_version) VALUES (?,1,?,?,?,?,?,?,?)", [body.id, selectedWorkflow ? JSON.stringify(selectedWorkflow) : null, typeof body.prompt === "string" ? body.prompt : null, typeof body.negativePrompt === "string" ? body.negativePrompt : null, body.additional ? JSON.stringify(body.additional) : null, nodeMapping ? JSON.stringify(nodeMapping) : null, configId, configVersion]);
+    const [versionRows] = await conn.execute<RowDataPacket[]>("SELECT version AS lastVersion FROM preset_versions WHERE preset_id = ? ORDER BY version DESC LIMIT 1 FOR UPDATE", [body.id]);
+    const version = Number(versionRows[0]?.lastVersion ?? 0) + 1;
+    await conn.execute("INSERT INTO presets (id,version,name,subtitle,description,image,tint,accent,tag,prompt_label,prompt_placeholder,moods,enabled,category_id,cover_asset_id,updated_at) VALUES (?,?, ?,?,?,?,?,?,?,?,?,?,?, ?,?,UTC_TIMESTAMP(3))", [body.id, version, body.name.trim(), typeof body.subtitle === "string" ? body.subtitle.slice(0,100) : "", typeof body.description === "string" ? body.description.slice(0,500) : "", typeof body.image === "string" ? body.image : "", typeof body.tint === "string" ? body.tint : "#eeeeee", typeof body.accent === "string" ? body.accent : "#333333", typeof body.tag === "string" ? body.tag.slice(0,40) : "", typeof body.promptLabel === "string" ? body.promptLabel.slice(0,100) : "", typeof body.promptPlaceholder === "string" ? body.promptPlaceholder.slice(0,200) : "", JSON.stringify(Array.isArray(body.moods) ? body.moods.filter((item): item is string => typeof item === "string").slice(0,8) : []), Boolean(body.enabled), body.categoryId, typeof body.coverAssetId === "string" ? body.coverAssetId : null]);
+    await conn.execute("INSERT INTO preset_versions (preset_id,version,workflow,prompt,negative_prompt,additional,node_mapping,workflow_config_id,workflow_config_version) VALUES (?,?,?,?,?,?,?,?,?)", [body.id, version, selectedWorkflow ? JSON.stringify(selectedWorkflow) : null, typeof body.prompt === "string" ? body.prompt : null, typeof body.negativePrompt === "string" ? body.negativePrompt : null, body.additional ? JSON.stringify(body.additional) : null, nodeMapping ? JSON.stringify(nodeMapping) : null, configId, configVersion]);
     await conn.execute("INSERT INTO audit_events (id,actor_type,action,target_id,created_at) VALUES (?,'admin','preset.created',?,UTC_TIMESTAMP(3))", [randomUUID(),body.id]);
     await conn.commit();
     return jsonResponse({ preset: (await getStoredPresets(true)).find((preset) => preset.id === body.id) }, 201);

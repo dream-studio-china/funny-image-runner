@@ -88,7 +88,7 @@ export const presets = mysqlTable("presets", {
   moods: json("moods").$type<string[]>().notNull(),
   enabled: boolean("enabled").notNull().default(true),
   workerConfig: json("worker_config").$type<Record<string, unknown> | null>(),
-  categoryId: varchar("category_id", { length: 80 }).notNull().default("general"),
+  categoryId: varchar("category_id", { length: 80 }).default("general"),
   coverAssetId: char("cover_asset_id", { length: 36 }),
   updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
 });

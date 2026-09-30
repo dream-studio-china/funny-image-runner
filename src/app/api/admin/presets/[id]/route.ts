@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { RowDataPacket } from "mysql2/promise";
 import { isAdminRequest } from "@/lib/admin-auth";
 import { getPool } from "@/lib/db";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson } from "@/lib/http";
@@ -20,7 +22,7 @@ type PresetUpdate = {
   promptPlaceholder: string;
   moods: string[];
   enabled: boolean;
-  categoryId?: string;
+  categoryId?: string | null;
   coverAssetId?: string | null;
   workflow?: Record<string, unknown> | null;
   prompt?: string | null;
@@ -47,7 +49,7 @@ function validatePreset(value: unknown): value is PresetUpdate {
     Array.isArray(value.moods) && value.moods.length > 0 && value.moods.length <= 8 &&
     value.moods.every((mood) => typeof mood === "string" && mood.trim().length > 0 && mood.length <= 40) &&
     typeof value.enabled === "boolean" &&
-    (value.categoryId === undefined || (typeof value.categoryId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(value.categoryId))) &&
+    (value.categoryId === undefined || value.categoryId === null || (typeof value.categoryId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(value.categoryId))) &&
     (value.coverAssetId === undefined || value.coverAssetId === null || typeof value.coverAssetId === "string") &&
     (value.workflowConfigId === undefined || value.workflowConfigId === null || (typeof value.workflowConfigId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(value.workflowConfigId))) &&
     [value.workflow, value.additional, value.nodeMapping].every((item) => item === undefined || item === null || (isRecord(item) && JSON.stringify(item).length <= 100_000)) &&
@@ -79,8 +81,13 @@ export async function PATCH(request: Request, { params }: Context): Promise<Resp
     let result;
     try {
       await connection.beginTransaction();
-      const [categoryRows] = await connection.execute("SELECT id FROM preset_categories WHERE id=?", [body.categoryId ?? "general"]);
-      if (!(categoryRows as unknown[]).length) { await connection.rollback(); return jsonResponse({ error: "category_not_found" }, 400); }
+      const nextCategoryId = body.categoryId === undefined ? "general" : body.categoryId;
+      if (nextCategoryId !== null) {
+        const [categoryRows] = await connection.execute("SELECT id FROM preset_categories WHERE id = ? FOR UPDATE", [nextCategoryId]);
+        if (!(categoryRows as unknown[]).length) { await connection.rollback(); return jsonResponse({ error: "category_not_found" }, 400); }
+      }
+      const [presetRows] = await connection.execute("SELECT id FROM presets WHERE id = ? FOR UPDATE", [id]);
+      if (!(presetRows as unknown[]).length) { await connection.rollback(); return jsonResponse({ error: "preset_not_found" }, 404); }
       if (body.coverAssetId) {
         const [assetRows] = await connection.execute("SELECT id FROM preset_assets WHERE id=?", [body.coverAssetId]);
         if (!(assetRows as unknown[]).length) { await connection.rollback(); return jsonResponse({ error: "asset_not_found" }, 400); }
@@ -90,7 +97,7 @@ export async function PATCH(request: Request, { params }: Context): Promise<Resp
                           tag = ?, prompt_label = ?, prompt_placeholder = ?, moods = ?, enabled = ?, category_id=?, cover_asset_id=?, updated_at = UTC_TIMESTAMP(3)
        WHERE id = ?`,
       [body.name.trim(), body.subtitle.trim(), body.description.trim(), body.image, body.tint, body.accent,
-        body.tag.trim(), body.promptLabel.trim(), body.promptPlaceholder.trim(), JSON.stringify(body.moods), body.enabled, body.categoryId ?? "general", body.coverAssetId ?? null, id],
+        body.tag.trim(), body.promptLabel.trim(), body.promptPlaceholder.trim(), JSON.stringify(body.moods), body.enabled, nextCategoryId, body.coverAssetId ?? null, id],
       );
       if ("affectedRows" in result && result.affectedRows === 0) { await connection.rollback(); return jsonResponse({ error: "preset_not_found" }, 404); }
       const [versionRows] = await connection.execute("SELECT version FROM presets WHERE id=?", [id]);
@@ -124,5 +131,49 @@ export async function PATCH(request: Request, { params }: Context): Promise<Resp
   } catch (error) {
     console.error("Admin preset update failed", error instanceof Error ? error.message : "unknown error");
     return jsonResponse({ error: "service_unavailable" }, 503);
+  }
+}
+
+export async function DELETE(request: Request, { params }: Context): Promise<Response> {
+  if (!isSameOriginRequest(request)) return jsonResponse({ error: "origin_not_allowed" }, 403);
+  try {
+    if (!await isAdminRequest(request)) return jsonResponse({ error: "unauthorized" }, 401);
+  } catch {
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  }
+  const { id } = await params;
+  if (!/^[a-z0-9][a-z0-9-]{1,79}$/.test(id)) return jsonResponse({ error: "preset_not_found" }, 404);
+
+  let connection;
+  try {
+    connection = await getPool().getConnection();
+    await connection.beginTransaction();
+    const [presetRows] = await connection.execute("SELECT id FROM presets WHERE id = ? FOR UPDATE", [id]);
+    if (!(presetRows as unknown[]).length) {
+      await connection.rollback();
+      return jsonResponse({ error: "preset_not_found" }, 404);
+    }
+    const [activeRows] = await connection.execute<RowDataPacket[]>(
+      "SELECT COUNT(*) AS total FROM jobs WHERE preset_id = ? AND status IN ('queued', 'running')",
+      [id],
+    );
+    const activeJobs = Number(activeRows[0]?.total ?? 0);
+    if (activeJobs > 0) {
+      await connection.rollback();
+      return jsonResponse({ error: "preset_in_use", activeJobs }, 409);
+    }
+    await connection.execute("DELETE FROM presets WHERE id = ?", [id]);
+    await connection.execute(
+      "INSERT INTO audit_events (id, actor_type, action, target_id, created_at) VALUES (?, 'admin', 'preset.deleted', ?, UTC_TIMESTAMP(3))",
+      [randomUUID(), id],
+    );
+    await connection.commit();
+    return jsonResponse({ deleted: true, presetId: id });
+  } catch (error) {
+    await connection?.rollback();
+    console.error("Admin preset delete failed", error instanceof Error ? error.message : "unknown error");
+    return jsonResponse({ error: "service_unavailable" }, 503);
+  } finally {
+    connection?.release();
   }
 }

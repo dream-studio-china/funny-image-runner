@@ -1,0 +1,1 @@
+ALTER TABLE presets MODIFY COLUMN category_id VARCHAR(80) NULL DEFAULT 'general';

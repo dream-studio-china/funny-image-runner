@@ -9,7 +9,7 @@ export async function GET(): Promise<Response> {
     const availablePresets = await getStoredPresets();
     const storedCategories = await getPresetCategories();
     const allowedCategories = new Set(storedCategories.map((category) => String(category.id)));
-    const presets=availablePresets.filter((preset) => allowedCategories.has(preset.categoryId));
+    const presets = availablePresets.filter((preset) => preset.categoryId === null || allowedCategories.has(preset.categoryId));
     const categories=storedCategories.map(({coverKey,...category})=>{
       const fallback=presets.find((preset)=>preset.categoryId===String(category.id));
       return {...category,image:signedCover(coverKey) ?? (fallback ? signedCover(fallback.coverKey) ?? fallback.image : null)};
