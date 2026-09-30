@@ -84,6 +84,10 @@ export default function Studio() {
   const [toast, setToast] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
+  const [inviteCode, setInviteCode] = useState("");
+  const [inviteError, setInviteError] = useState("");
+  const [isRedeeming, setIsRedeeming] = useState(false);
+  const [authenticatedUser, setAuthenticatedUser] = useState<string | null>(null);
   const [showDetails, setShowDetails] = useState(true);
   const inputRef = useRef<HTMLInputElement>(null);
   const accessTriggerRef = useRef<HTMLButtonElement>(null);
@@ -113,6 +117,15 @@ export default function Studio() {
       timeoutRefs.current.forEach(clearTimeout);
       if (previewRef.current) URL.revokeObjectURL(previewRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/auth/me", { signal: controller.signal, cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() as Promise<{ userId: string }> : null)
+      .then((result) => { if (result?.userId) setAuthenticatedUser(result.userId); })
+      .catch(() => undefined);
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -219,6 +232,43 @@ export default function Studio() {
     scrollToSection("upload");
   }
 
+  async function redeemCode(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!inviteCode.trim() || isRedeeming) return;
+    setIsRedeeming(true);
+    setInviteError("");
+    try {
+      const response = await fetch("/api/auth/redeem", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: inviteCode }),
+      });
+      const result = await response.json() as { userId?: string; error?: string };
+      if (!response.ok || !result.userId) {
+        setInviteError(result.error === "service_unavailable" ? "服务暂时不可用，请稍后再试。" : "邀请码无效、已使用或已过期，请检查后重试。");
+        return;
+      }
+      setAuthenticatedUser(result.userId);
+      setInviteCode("");
+      setShowAccess(false);
+      setToast(`欢迎回来，${result.userId}！`);
+    } catch {
+      setInviteError("暂时无法连接服务，请稍后重试。");
+    } finally {
+      setIsRedeeming(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      setAuthenticatedUser(null);
+      setToast("已安全退出");
+    } catch {
+      setToast("退出请求未完成，请检查网络");
+    }
+  }
+
   const isRunning = stage === "queued" || stage === "creating";
   const resultPreset = presets.find((preset) => preset.id === activeJob?.presetId) ?? selected;
 
@@ -238,7 +288,7 @@ export default function Studio() {
             <button onClick={() => scrollToSection("my-works")}>我的作品</button>
           </nav>
           <div className="header-actions">
-            <button ref={accessTriggerRef} type="button" className="demo-pill" onClick={() => setShowAccess(true)} aria-label="查看邀请码入口"><span className="pulse-dot" />DEMO MODE</button>
+            {authenticatedUser ? <button type="button" className="demo-pill signed-in-pill" onClick={logout} aria-label={`已登录 ${authenticatedUser}，点击退出`}><span className="pulse-dot" />{authenticatedUser}<span className="logout-label">· 退出</span></button> : <button ref={accessTriggerRef} type="button" className="demo-pill" onClick={() => setShowAccess(true)} aria-label="查看邀请码入口"><span className="pulse-dot" />DEMO MODE</button>}
             <button type="button" className="header-create" onClick={() => scrollToSection("studio")}>去创作 <ArrowRight size={15} /></button>
             <button type="button" className="mobile-menu-toggle" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label={mobileMenuOpen ? "关闭菜单" : "打开菜单"} aria-expanded={mobileMenuOpen}>
               {mobileMenuOpen ? <X size={23} /> : <Menu size={23} />}
@@ -322,7 +372,7 @@ export default function Studio() {
       <footer className="site-footer"><div className="container footer-inner"><div><div className="footer-logo">✳ 咔嚓造梦局</div><p>让每一张平凡的照片，都有做梦的权利。</p></div><div className="footer-right"><span>MADE FOR THE DAYDREAMERS ✦</span><small>当前为交互演示 · 图像生成服务尚未接入</small></div></div></footer>
 
       <nav className="mobile-bottom-nav" aria-label="快捷导航"><button type="button" onClick={() => scrollToSection("top")}><Sparkles size={21} /><span>发现</span></button><button type="button" className="mobile-nav-create" onClick={() => scrollToSection("studio")}><Plus size={26} strokeWidth={2.4} /><span>创作</span></button><button type="button" onClick={() => scrollToSection("my-works")}><Heart size={21} /><span>作品</span></button></nav>
-      {showAccess && <div className="access-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAccess(false); }}><div className="access-dialog" role="dialog" aria-modal="true" aria-labelledby="access-title"><button ref={accessCloseRef} type="button" className="access-close" onClick={() => setShowAccess(false)} aria-label="关闭邀请码窗口"><X size={19} /></button><div className="access-symbol">✳</div><span className="progress-kicker">A LITTLE INVITATION</span><h2 id="access-title">欢迎来到<br /><em>造梦局。</em></h2><p>正式版本将通过专属邀请码开启你的创作空间。现在先自由逛逛，体验一下灵感的样子吧。</p><div className="access-input-preview"><span>✦</span> 在这里输入你的专属邀请码 <span>↗</span></div><span className="access-hint">邀请码验证功能将在服务端接入后开放</span><button type="button" className="primary-button access-action" onClick={() => { setShowAccess(false); scrollToSection("studio"); }}>继续体验演示 <ArrowRight size={17} /></button></div></div>}
+      {showAccess && <div className="access-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAccess(false); }}><div className="access-dialog" role="dialog" aria-modal="true" aria-labelledby="access-title"><button ref={accessCloseRef} type="button" className="access-close" onClick={() => setShowAccess(false)} aria-label="关闭邀请码窗口"><X size={19} /></button><div className="access-symbol">✳</div><span className="progress-kicker">A LITTLE INVITATION</span><h2 id="access-title">欢迎来到<br /><em>造梦局。</em></h2><p>输入管理员发给你的专属邀请码，开启你的创作空间。</p><form onSubmit={redeemCode}><label className="invite-code-label" htmlFor="invite-code">专属邀请码</label><input id="invite-code" className="invite-code-input" autoComplete="one-time-code" autoCapitalize="characters" spellCheck={false} maxLength={64} value={inviteCode} onChange={(event) => { setInviteCode(event.target.value); setInviteError(""); }} placeholder="XXXXX-XXXXX-XXXXX" required aria-describedby={inviteError ? "invite-error" : "invite-hint"} />{inviteError ? <span id="invite-error" className="invite-error" role="alert">{inviteError}</span> : <span id="invite-hint" className="access-hint">每个邀请码仅可使用一次</span>}<button type="submit" className="primary-button access-action" disabled={isRedeeming}>{isRedeeming ? "正在验证…" : "验证并进入"}<ArrowRight size={17} /></button></form><button type="button" className="access-demo-link" onClick={() => { setShowAccess(false); scrollToSection("studio"); }}>先看看演示 <ArrowRight size={15} /></button></div></div>}
       {toast && <div className="toast" role="status"><Sparkles size={16} />{toast}<button type="button" aria-label="关闭提示" onClick={() => setToast("")}><X size={15} /></button></div>}
     </div>
   );
