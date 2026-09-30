@@ -44,7 +44,7 @@ openssl rand -base64 32
 npm run db:migrate
 ```
 
-Drizzle CLI 会读取 `.env.local`。命令成功后会建立用户、邀请码、会话、限流、上传占位、生成任务、输出和审计表。重复运行是安全的；若 schema 后续有变化，先审核新 migration，再执行。
+Drizzle CLI 会读取 `.env.local`。命令成功后会建立用户、邀请码、用户/管理员会话、预设、限流、上传占位、生成任务、输出和审计表。重复运行是安全的；若 schema 后续有变化，先审核新 migration，再执行。
 
 ## 4. 检查服务
 
@@ -74,4 +74,4 @@ curl --fail --silent --show-error http://localhost:3000/api/health
 - 已实现 `POST /api/admin/invitations/issue` 自动签发 API；调用前必须在服务端配置 `ADMIN_API_TOKEN`、`INVITATION_ENCRYPTION_KEY` 和 `APP_BASE_URL`；`INVITATION_TTL_DAYS` 可选，详见 [签发邀请码 runbook](./issue-invitation-links.md)。
 - 页面允许在没有数据库时浏览演示；这不代表认证或真实生成已经可用。
 - ComfyUI worker 尚未实现；登录用户可直传七牛并创建 `queued` 任务，但暂无服务实际执行生成。
-- 当前没有管理员网页、邀请撤销界面或用户管理界面。遇到已泄露的邀请码，按 [邀请码 runbook](./issue-invitation-links.md#紧急处理邀请码泄露) 处理。
+- 管理操作入口是 `/admin`，邀请码撤销、用户启停及风格配置见 [后台管理 runbook](./admin-console.md)。

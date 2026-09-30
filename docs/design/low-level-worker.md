@@ -2,6 +2,8 @@
 
 关联：[总体设计](./high-level-design.md) · [预设](./low-level-presets.md) · [任务 API](./low-level-jobs.md) · [存储](./low-level-storage.md)
 
+**实现状态：**本文件目前是 worker 的目标设计，不代表仓库已有 worker 程序。云端可创建和查询队列任务；worker、ComfyUI 调用与输出回传需在 API 格式 workflow 确认后实现。
+
 ## 进程与依赖
 
 独立于 Vercel 的 TypeScript/Node.js 常驻进程，运行在 ComfyUI 所在机器。配置 `WEB_API_BASE_URL`、`WORKER_TOKEN`、`COMFY_BASE_URL=http://127.0.0.1:8188`、工作流目录及并发上限；禁止把 worker 凭证放入 Next.js 客户端环境变量。worker 启动时检查云端 API、ComfyUI `/system_stats`（或其他只读健康接口）、本地工作流版本和节点依赖；无法访问时退避重试。

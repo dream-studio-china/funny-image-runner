@@ -42,6 +42,8 @@ running.phase = claimed | input_ready | prompt_submitting |
 
 ## worker API
 
+以下是目标 worker API 契约，当前 worker 进程及这些路由尚未实现；因此目前创建的任务会留在 `queued`，不会自动生成结果。
+
 全部使用独立 Bearer 凭证、HTTPS。领取任务返回规范化参数和预设版本，但**不**直接返回七牛下载链接；所有写请求含租约令牌。令牌由领取时生成，仅其摘要入库，过期/错误令牌一律 409。
 
 | 路由 | 输入 / 作用 |

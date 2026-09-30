@@ -37,9 +37,11 @@ Content-Type: application/json
 {"orderRef":"order-id:item-id:delivery-sequence","customerRef":"stable-customer-ref"}
 ```
 
-接口成功返回的 `inviteUrl` 可直接发给买家；详细的 request/response、幂等规则和安全注意事项见 [签发邀请码 runbook](docs/runbooks/issue-invitation-links.md)。当前还提供 `POST /api/auth/redeem`、`GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/admin/invitations/import` 及 `GET /api/health`。本地没有数据库时页面仍可预览，服务端接口返回 unavailable；可使用 `npm run db:generate` 从 schema 生成后续 migration。
+接口成功返回的 `inviteUrl` 可直接发给买家；详细的 request/response、幂等规则和安全注意事项见 [签发邀请码 runbook](docs/runbooks/issue-invitation-links.md)。当前 API 还包括邀请码/管理员会话、`/api/admin/users`、`/api/admin/invitations`、`/api/admin/presets`，以及用户侧 `/api/presets`、`/api/uploads` 和 `/api/jobs`（含状态与结果接口）。本地没有数据库时页面仍可预览，服务端接口返回 unavailable；可使用 `npm run db:generate` 从 schema 生成后续 migration。
 
 登录用户可在页面上传照片并创建 `queued` 任务；worker 接入前任务会保留在队列，不会伪造生成结果。图片由浏览器直传七牛，详见 [七牛上传与任务 API runbook](docs/runbooks/qiniu-storage-and-jobs.md)。
+
+管理员控制台入口为 `/admin`，使用服务端 `ADMIN_API_TOKEN` 登录；可管理邀请码、用户状态和预设显示配置。ComfyUI 页面目前为预留说明。详细操作见 [后台管理 runbook](docs/runbooks/admin-console.md)。
 
 总体方案与详细接口见 [`docs/design/`](docs/design/README.md)。
 管理员数据库初始化与邀请码操作见 [`docs/runbooks/`](docs/runbooks/README.md)。

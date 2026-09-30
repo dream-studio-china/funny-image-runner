@@ -103,30 +103,32 @@ user_001  1  https://your-domain.example/#invite=XXXXX-XXXXX-XXXXX-...
 
 ## 紧急处理邀请码泄露
 
-目前没有管理员撤销 API/网页。若 CLI 签发的码已泄露且尚未兑换，可由有权限的数据库管理员通过受控 MySQL 会话将它标记为已使用，使兑换接口拒绝该码。只对确认泄露的单码执行，并核对 `ROW_COUNT()` 为 1；此操作没有专用审计事件，应在组织自己的变更记录中登记：
+管理员后台提供撤销未兑换邀请码的操作。若使用受控 SQL 紧急撤销，更新 `revoked_at`（不会伪装成用户已兑换）；只对确认泄露的单码执行，并核对 `ROW_COUNT()` 为 1。后台撤销会写入审计事件，直接 SQL 操作需在组织自己的变更记录中登记：
 
 ```sql
 START TRANSACTION;
 SET @invite_code = UPPER(REPLACE(REPLACE('XXXXX-XXXXX-XXXXX-...', '-', ''), ' ', ''));
 UPDATE invitations
-SET redeemed_at = UTC_TIMESTAMP(3)
+SET revoked_at = UTC_TIMESTAMP(3)
 WHERE code_hash = SHA2(@invite_code, 256)
-  AND redeemed_at IS NULL;
+  AND redeemed_at IS NULL
+  AND revoked_at IS NULL;
 SELECT ROW_COUNT() AS invalidated_count;
 COMMIT;
 ```
 
-若 `invalidated_count` 为 0，可能是码错误、已兑换或不存在；不要扩大 UPDATE 条件。若链接已被兑换，当前没有管理端会话撤销流程；需在修复管理员撤销功能前，按组织事件响应流程处理并避免将该 user-id/会话视为已安全撤销。
+若 `invalidated_count` 为 0，可能是码错误、已兑换、已撤销或不存在；不要扩大 UPDATE 条件。邀请码撤销不等于撤销用户已有会话；停用用户会撤销其会话。
 
-API 签发的码密文存储于 `invitations.code_ciphertext`，不能通过仅有 `code_hash` 的 CLI 导入路径重建链接。若未兑换的 API 签发链接泄露，使用受控 SQL 将**指定 `invitationId`** 标记为已兑换，并核对目标订单引用摘要/用户标识；不要导出密文或直接修改其他订单记录：
+API 签发的码密文存储于 `invitations.code_ciphertext`，不能通过仅有 `code_hash` 的 CLI 导入路径重建链接。若未兑换的 API 签发链接泄露，优先在 `/admin` 邀请码表撤销。紧急时可使用受控 SQL 将**指定 `invitationId`** 标记为已撤销，并核对目标订单引用摘要/用户标识；不要导出密文或直接修改其他订单记录：
 
 ```sql
 START TRANSACTION;
 UPDATE invitations
-SET redeemed_at = UTC_TIMESTAMP(3)
+SET revoked_at = UTC_TIMESTAMP(3)
 WHERE id = '<确认过的 invitationId>'
   AND issue_source = 'taobao'
-  AND redeemed_at IS NULL;
+  AND redeemed_at IS NULL
+  AND revoked_at IS NULL;
 SELECT ROW_COUNT() AS invalidated_count;
 COMMIT;
 ```
@@ -137,6 +139,7 @@ COMMIT;
 | --- | --- |
 | `401 unauthorized` | `ADMIN_API_TOKEN` 与应用环境不一致，或 API 未配置该 token；不要把 token 发给用户 |
 | `409 order_conflict` | 同一个 `orderRef` 已绑定其他用户；检查淘宝重试是否传入一致的用户标识。不可为同一个交付引用改绑用户 |
+| `409 invitation_revoked` | 此订单引用对应的邀请码已撤销；签发补发码时使用新的订单引用 |
 | `409 invitation_conflict` | CLI 的相同 batch-id/ordinal 已绑定了不同用户、摘要或有效期；不要覆盖。改用新批次/序号，先检查 seed 和发码记录 |
 | `429 rate_limited` | IP 超过兑换尝试限额（每 15 分钟最多 10 次）；等待限流窗口结束，勿反复重试 |
 | `503 service_unavailable` | API/RDS 暂不可用；先检查 `/api/health` 和服务日志，确认后再重跑相同签发命令 |
