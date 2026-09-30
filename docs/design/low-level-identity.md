@@ -5,13 +5,13 @@
 ## 身份模型
 
 - `users(id VARCHAR(64) PRIMARY KEY, created_at, disabled_at)`：`id` 可由管理员指定，也可由发码 API 根据稳定 `customerRef` 派生；采用长度 3–64、字母数字及 `_-`，创建后不可由用户修改。
-- `invitations(id CHAR(36), user_id FK, batch_id VARCHAR(80), ordinal INT, code_hash CHAR(64) UNIQUE, created_at, expires_at, redeemed_at, revoked_at, issue_source NULL, source_ref NULL, code_ciphertext NULL)`：一个用户可有多张邀请码，但每张仅兑换一次；`(batch_id, ordinal)` 和 `(issue_source, source_ref)` 唯一。`source_ref` 是外部订单引用的 SHA-256，不存原始订单标识；API 签发码以 AES-256-GCM 加密保存，仅用于幂等重试返回相同链接。撤销状态独立于兑换状态；禁用用户后历史任务保留，接口拒绝新登录/提交。
+- `invitations(id CHAR(36), user_id FK, batch_id VARCHAR(80), ordinal INT, code_hash CHAR(64) UNIQUE, created_at, expires_at, redeemed_at, revoked_at, issue_source NULL, source_ref NULL, code_ciphertext NULL)`：一个用户可有多张邀请凭证；同一凭证可重复创建登录会话，直到过期、管理员撤销或用户停用。`redeemed_at` 仅记录首次使用时间；`(batch_id, ordinal)` 和 `(issue_source, source_ref)` 唯一。`source_ref` 是外部订单引用的 SHA-256，不存原始订单标识；API 签发码以 AES-256-GCM 加密保存，仅用于幂等重试返回相同链接。撤销状态独立于首次使用状态；禁用用户后历史任务保留，接口拒绝新登录/提交。
 - `sessions(id CHAR(36), user_id FK, token_hash CHAR(64) UNIQUE, expires_at, revoked_at, created_at)`：Cookie 中只有随机会话令牌，数据库存其摘要。会话可撤销；默认绝对有效期 30 天，按需要提供显式退出。
 - `admin_sessions(id CHAR(36), token_hash CHAR(64) UNIQUE, expires_at, revoked_at, created_at)`：管理员通过 `ADMIN_API_TOKEN` 建立 8 小时数据库会话；浏览器只保存独立 HttpOnly/SameSite=Strict Cookie。
 
-表由 Drizzle MySQL schema 定义并通过提交的 SQL migration 建立。所有日期列使用 UTC `DATETIME(3)`，连接池使用 UTC 时区；UUID 以 CHAR(36) 存储，摘要以固定长度十六进制字符串存储。邀请码兑换在 MySQL 事务中通过 `SELECT ... FOR UPDATE` 锁定邀请行，并在更新时附加 `redeemed_at IS NULL` 条件；唯一约束作为并发竞争的最终防线。
+表由 Drizzle MySQL schema 定义并通过提交的 SQL migration 建立。所有日期列使用 UTC `DATETIME(3)`，连接池使用 UTC 时区；UUID 以 CHAR(36) 存储，摘要以固定长度十六进制字符串存储。邀请码登录在 MySQL 事务中通过 `SELECT ... FOR UPDATE` 锁定邀请行，拒绝已撤销/过期邀请或已停用用户；`redeemed_at` 仅首次登录时设置，后续登录保留该时间。
 
-管理员发码 CLI 在可信设备运行；使用至少 256 位随机生成的秘密 `INVITE_SEED`，按 `HMAC-SHA256(seed, "invite:v1:" + batch_id + ":" + ordinal)` 截取不少于 128 位并编码为可抄写的码。不同批次和序号有独立码；不要用时间戳或短数字做 seed。数据库只存 `SHA-256(normalize(code))`；HMAC 的强随机性保证即使摘要泄露也不易离线枚举。seed 不上传 Vercel、不保存数据库、不写入仓库。发码 CLI 只传 `user_id, batch_id, ordinal, code_hash, expires_at` 到管理员导入接口，并仅在本地输出明文码。重复导入同一 `(batch_id, ordinal)` 幂等；摘要/用户绑定不一致时返回冲突，不静默改绑。
+管理员发码 CLI 在可信设备运行；使用至少 256 位随机生成的秘密 `INVITE_SEED`，按 `HMAC-SHA256(seed, "invite:v1:" + batch_id + ":" + ordinal)` 截取不少于 128 位并编码为可抄写的码。不同批次和序号有独立码；不要用时间戳或短数字做 seed。CLI 将 `code_hash` 和明文 code 通过 HTTPS 传给管理员导入接口；服务端校验 hash 后只存摘要和 AES-256-GCM 加密的 code，管理员后台才可在用户详情中恢复/复制链接。seed 不上传 Vercel、不保存数据库、不写入仓库。重复导入同一 `(batch_id, ordinal)` 幂等；摘要/用户绑定不一致时返回冲突，不静默改绑。
 
 ## HTTP 契约
 
@@ -19,18 +19,19 @@
 | --- | --- | --- | --- |
 | `POST /api/admin/session` | 未登录 | `{token}` | 校验管理员 API token，创建 8 小时管理员会话 Cookie |
 | `GET /api/admin/session` / `DELETE /api/admin/session` | 管理员 Cookie | 无 | 查询会话状态 / 撤销当前管理员会话 |
-| `POST /api/admin/invitations/import` | 管理员 Bearer / 管理员 Cookie | `items: [{userId,batchId,ordinal,codeHash,expiresAt}]` | 事务创建用户（如不存在）及邀请码；不返回明文 |
-| `POST /api/admin/invitations/issue` | 管理员 Bearer（自动发货）/ 管理员 Cookie | `{orderRef,userId?,customerRef?}` | 按订单引用幂等地创建用户/邀请码，返回一次性 `inviteUrl`；同单重试返回原链接 |
+| `POST /api/admin/invitations/import` | 管理员 Bearer / 管理员 Cookie | `items: [{userId,batchId,ordinal,codeHash,code?,expiresAt}]` | 事务创建用户（如不存在）及邀请；收到原始 code 时校验摘要并加密保存，绝不返回明文 |
+| `POST /api/admin/invitations/issue` | 管理员 Bearer（自动发货）/ 管理员 Cookie | `{orderRef,userId?,customerRef?}` | 按订单引用幂等地创建用户/邀请凭证，返回可重复登录的 `inviteUrl`；同单重试返回原链接 |
 | `GET /api/admin/users` / `PATCH /api/admin/users/{id}` | 管理员会话/Bearer | 查询参数 / `{disabled:boolean}` | 查看用户及任务计数，停用用户时撤销其登录会话 |
-| `GET /api/admin/invitations` / `POST /api/admin/invitations/{id}/revoke` | 管理员会话/Bearer | `limit` / 无 | 列出发码记录 / 单独撤销尚未兑换的邀请码 |
+| `GET /api/admin/users/{id}/invitations` | 管理员会话/Bearer | 无 | 查看该用户邀请记录；仅在密文可恢复且链接有效时返回 code/URL |
+| `GET /api/admin/invitations` / `POST /api/admin/invitations/{id}/revoke` | 管理员会话/Bearer | `limit` / 无 | 列出发码记录 / 撤销尚未撤销的邀请凭证 |
 | `GET /api/admin/presets` / `PATCH /api/admin/presets/{id}` | 管理员会话/Bearer | 风格公开字段 | 编辑现有风格字段并递增版本；workflow 映射不从浏览器配置 |
 | `POST /api/auth/redeem` | 未登录 | `{code}` | 原子兑换、创建会话、设置 HttpOnly Cookie，返回 `{userId}` |
 | `GET /api/auth/me` | 用户 Cookie | 无 | `{userId}`，无效会话返回 401 |
 | `POST /api/auth/logout` | 用户 Cookie | 无 | 撤销当前会话并清除 Cookie |
 
-兑换事务：规范化码并计算摘要 → 以 IP 摘要为 key 使用 MySQL `auth_rate_limits` 做跨实例限速（每 IP 每 15 分钟最多 10 次）→ 查询邀请码并锁行 → 检查未兑换、未过期且用户未禁用 → 更新 `redeemed_at`（条件更新确保仅一人成功）→ 创建随机会话 → 提交事务后设置 `HttpOnly; Secure; SameSite=Lax; Path=/` Cookie。无效/已用/过期使用统一错误提示；日志不可记录邀请码、Cookie 或 seed。会话读取校验过期、撤销与用户禁用；用户上下文由服务端注入后续 API。
+登录事务：规范化码并计算摘要 → 以 IP 摘要为 key 使用 MySQL `auth_rate_limits` 做跨实例限速（每 IP 每 15 分钟最多 10 次）→ 查询邀请码并锁行 → 检查未撤销、未过期且用户未禁用 → 首次使用时写入 `redeemed_at`（后续登录保留原时间）→ 每次创建新的随机用户会话 → 提交事务后设置 `HttpOnly; Secure; SameSite=Lax; Path=/` Cookie。无效/已撤销/过期使用统一错误提示；日志不可记录邀请码、Cookie 或 seed。会话读取校验过期、撤销与用户禁用；用户上下文由服务端注入后续 API。
 
-失去浏览器会话或会话到期时，不重复使用原邀请码：管理员为已有 `user_id` 签发新的一次性码。补发不会创建第二个用户；旧有效会话可由管理员撤销。用户不可通过填写其他人的标识冒领任务。
+用户退出只撤销当前会话，不会消耗或撤销邀请链接；用户可从最初收到的链接再次登录。链接丢失时，管理员可在 `/admin` 用原订单引用重取自动签发链接（同一订单幂等），或为同一 `user_id` 新签发一个链接。后台可撤销尚未过期/撤销的邀请链接，也可停用用户并撤销其全部会话。
 
 ## 服务凭证
 
@@ -41,4 +42,4 @@
 
 ## 验收条件
 
-相同邀请码仅能成功兑换一次；重导入不改变绑定；会话失效后不能取私有任务；为原用户补发邀请码可重新登录并看到原任务；普通用户及 worker 均无法调用管理员接口。
+同一有效邀请凭证可重复建立会话；撤销、过期或用户停用后不能登录；重导入不改变绑定；会话失效后不能取私有任务；普通用户及 worker 均无法调用管理员接口。

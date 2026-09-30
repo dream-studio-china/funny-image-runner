@@ -1,6 +1,6 @@
-# Runbook：签发一次性邀请码链接
+# Runbook：签发可重复登录的邀请码链接
 
-淘宝自动发货优先直接调用 `POST /api/admin/invitations/issue`。管理员人工/批量补发可使用 `scripts/create-invitations.mjs` 导入预生成邀请码。API 为每个订单引用生成一次性邀请码，并以加密密文保存以支持调用方重试；CLI 用本地 seed 确定性生成邀请码。
+淘宝自动发货优先直接调用 `POST /api/admin/invitations/issue`。管理员人工签发可使用 `/admin` 控制台，批量补发可使用 `scripts/create-invitations.mjs`。邀请链接可重复用于登录，直到过期或管理员撤销；用户退出只撤销当前会话，不会使原链接失效。API 将码以加密密文保存以支持订单重试；新版 CLI 导入会把码加密存储，后台可查看/复制。
 
 ## 前置条件
 
@@ -92,18 +92,18 @@ unset INVITE_SEED ADMIN_API_TOKEN APP_BASE_URL
 user_001  1  https://your-domain.example/#invite=XXXXX-XXXXX-XXXXX-...
 ```
 
-链接将邀请码放在 `#invite=...` URL fragment 中：fragment 不会随初始 HTTP 请求发给服务器。应用打开页面后会预填邀请码并打开兑换框、立刻从地址栏移除邀请码，但**不会自动兑换**，用户需主动确认。这既方便用户从手机直接打开，也避免邮件/聊天平台的链接预览机器人消耗一次性码。应用也兼容 `?invite=...`，但管理发码应优先使用工具生成的 fragment 链接。
+链接将邀请码放在 `#invite=...` URL fragment 中：fragment 不会随初始 HTTP 请求发给服务器。应用打开页面后会预填邀请码并打开登录框、立刻从地址栏移除邀请码，但**不会自动登录**，用户需主动确认。重复打开最初收到的链接即可再次登录；聊天/淘宝订单中的原始邀请链接不会因为登录或退出而失效。应用也兼容 `?invite=...`，但管理发码应优先使用工具生成的 fragment 链接。
 
 ## 交付与核验
 
 1. 通过私密渠道将链接交给与该 user-id 对应的用户，不要发到公开群、公开 issue 或带公开访问权限的文档。
-2. 告知用户打开链接后确认兑换；兑换成功后页面显示其用户标识。邀请码只能兑换一次，登录会话默认最长 30 天。
+2. 告知用户打开链接后确认登录；成功后页面显示其用户标识。同一个邀请链接可重复登录，单次用户会话默认最长 30 天。
 3. 同一批次/序号/seed 重跑命令会生成相同邀请码；若记录绑定信息一致，导入是幂等的并会再次输出相同链接。保留 seed 和批次登记记录，避免丢失后无法重建尚未交付的链接。
-4. 用户报告“链接无效”时，不要要求用户在聊天中发送截图（可能包含码）；确认应用域名、目标环境/数据库和该 code 是否已兑换。需要补发时，使用**新的 ordinal** 或新的 batch-id 给相同 user-id 发新码；不要试图更改已有邀请码的绑定。
+4. 用户退出后只需重新打开原邀请链接，无须重新签发。管理员可在 `/admin` → 用户管理 → 查看邀请码中查看/复制有效链接。API 签发的邀请可使用原 `orderRef` 幂等重取；新版 CLI 邀请已加密存储 code，旧版仅存 hash 的记录无法恢复明文，可用原 seed/batch/ordinal 重建链接。若已过期或被撤销，再为同一用户签发新链接。
 
 ## 紧急处理邀请码泄露
 
-管理员后台提供撤销未兑换邀请码的操作。若使用受控 SQL 紧急撤销，更新 `revoked_at`（不会伪装成用户已兑换）；只对确认泄露的单码执行，并核对 `ROW_COUNT()` 为 1。后台撤销会写入审计事件，直接 SQL 操作需在组织自己的变更记录中登记：
+管理员后台可撤销未撤销的邀请链接，无论该链接是否已登录使用。若使用受控 SQL 紧急撤销，更新 `revoked_at`（不会伪装成首次登录）；只对确认泄露的单码执行，并核对 `ROW_COUNT()` 为 1。后台撤销会写入审计事件，直接 SQL 操作需在组织自己的变更记录中登记：
 
 ```sql
 START TRANSACTION;
@@ -111,15 +111,14 @@ SET @invite_code = UPPER(REPLACE(REPLACE('XXXXX-XXXXX-XXXXX-...', '-', ''), ' ',
 UPDATE invitations
 SET revoked_at = UTC_TIMESTAMP(3)
 WHERE code_hash = SHA2(@invite_code, 256)
-  AND redeemed_at IS NULL
   AND revoked_at IS NULL;
 SELECT ROW_COUNT() AS invalidated_count;
 COMMIT;
 ```
 
-若 `invalidated_count` 为 0，可能是码错误、已兑换、已撤销或不存在；不要扩大 UPDATE 条件。邀请码撤销不等于撤销用户已有会话；停用用户会撤销其会话。
+若 `invalidated_count` 为 0，可能是码错误、已撤销或不存在；不要扩大 UPDATE 条件。邀请码撤销不等于撤销用户已有会话；停用用户会撤销其会话。
 
-API 签发的码密文存储于 `invitations.code_ciphertext`，不能通过仅有 `code_hash` 的 CLI 导入路径重建链接。若未兑换的 API 签发链接泄露，优先在 `/admin` 邀请码表撤销。紧急时可使用受控 SQL 将**指定 `invitationId`** 标记为已撤销，并核对目标订单引用摘要/用户标识；不要导出密文或直接修改其他订单记录：
+API 签发的码密文存储于 `invitations.code_ciphertext`，不能通过仅有 `code_hash` 的 CLI 导入路径重建链接。若 API 签发链接泄露，优先在 `/admin` 邀请码表撤销。紧急时可使用受控 SQL 将**指定 `invitationId`** 标记为已撤销，并核对目标订单引用摘要/用户标识；不要导出密文或直接修改其他订单记录：
 
 ```sql
 START TRANSACTION;
@@ -127,7 +126,6 @@ UPDATE invitations
 SET revoked_at = UTC_TIMESTAMP(3)
 WHERE id = '<确认过的 invitationId>'
   AND issue_source = 'taobao'
-  AND redeemed_at IS NULL
   AND revoked_at IS NULL;
 SELECT ROW_COUNT() AS invalidated_count;
 COMMIT;

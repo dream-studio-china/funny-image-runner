@@ -1,6 +1,6 @@
 # 咔嚓造梦局
 
-移动端优先的图像生成应用。当前包含响应式演示 UI、MySQL 数据层、一次性邀请码兑换与自动签发 API、七牛浏览器直传和队列任务 API。匿名访客体验预制样图；登录用户可将图片上传至七牛并创建真实队列任务。ComfyUI worker 尚未连接，因此排队任务目前不会生成结果。
+移动端优先的图像生成应用。当前包含响应式演示 UI、MySQL 数据层、可重复登录的邀请码与自动签发 API、七牛浏览器直传和队列任务 API。匿名访客体验预制样图；登录用户可将图片上传至七牛并创建真实队列任务。原图大小不设前端限制；超过 200 万像素时会在浏览器缩放并转为 JPEG，处理后的文件不超过 20 MiB。ComfyUI worker 尚未连接，因此排队任务目前不会生成结果。
 
 ```bash
 npm install
@@ -23,7 +23,7 @@ ADMIN_API_TOKEN="<与服务端配置相同的管理员 token>" \
 npm run invitations:create -- spring-2026 user_001 1 1
 ```
 
-该命令为给定用户生成 `count` 个一次性邀请码，先将邀请码摘要写入 `POST /api/admin/invitations/import`，仅成功后才打印邀请链接。链接把邀请码放在 URL fragment（`#invite=...`），浏览器打开后会自动填入兑换框；不会在 GET 时自动兑换，避免预览机器人消耗邀请码。通过 `openssl rand -base64 32` 生成 seed，通过 `openssl rand -base64 48` 生成管理员 token，并安全交付邀请链接。
+该命令为给定用户生成 `count` 个可重复登录的邀请链接，将 code 与摘要通过 HTTPS 写入 `POST /api/admin/invitations/import`；服务端校验摘要后使用 `INVITATION_ENCRYPTION_KEY` 加密保存，只有导入成功才输出链接。通过 `openssl rand -base64 32` 生成 seed 和加密密钥，通过 `openssl rand -base64 48` 生成管理员 token。CLI 导入的链接默认不过期，可在 `/admin` 撤销；后台用户管理可查看/复制新版导入的链接。
 
 淘宝自动发货服务端通过 `POST /api/admin/invitations/issue` 签发链接，使用稳定的 `orderRef` 防止自动发货重试时重复发码：
 
@@ -41,7 +41,7 @@ Content-Type: application/json
 
 登录用户可在页面上传照片并创建 `queued` 任务；worker 接入前任务会保留在队列，不会伪造生成结果。图片由浏览器直传七牛，详见 [七牛上传与任务 API runbook](docs/runbooks/qiniu-storage-and-jobs.md)。
 
-管理员控制台入口为 `/admin`，使用服务端 `ADMIN_API_TOKEN` 登录；可管理邀请码、用户状态和预设显示配置。ComfyUI 页面目前为预留说明。详细操作见 [后台管理 runbook](docs/runbooks/admin-console.md)。
+管理员控制台入口为 `/admin`，使用服务端 `ADMIN_API_TOKEN` 登录；可管理邀请码、查看用户持有的邀请 code/链接、重新签发或撤销邀请、管理用户状态和预设显示配置。ComfyUI 页面目前为预留说明。详细操作见 [后台管理 runbook](docs/runbooks/admin-console.md)。
 
 总体方案与详细接口见 [`docs/design/`](docs/design/README.md)。
 管理员数据库初始化与邀请码操作见 [`docs/runbooks/`](docs/runbooks/README.md)。

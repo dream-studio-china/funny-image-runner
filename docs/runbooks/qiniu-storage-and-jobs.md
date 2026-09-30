@@ -55,14 +55,15 @@ curl --fail --silent --show-error http://localhost:3000/api/health
 
 ## 4. 浏览器端到端上传并创建任务
 
-1. 以已登录用户打开创作页面，选择 JPEG、PNG 或 WebP，图片大小不超过 20 MiB。
-2. 选择预设，心情必选，补充文本最多 120 字。
-3. 点击“上传并创建任务”。客户端按如下顺序执行：
+1. 以已登录用户打开创作页面，选择 JPEG、PNG 或 WebP；原始图片字节大小不设上限（实际受浏览器可解码能力限制）。
+2. 浏览器端自动处理图片：超过 2,000,000 像素时等比例缩小到不超过 2,000,000 像素并转为 JPEG；像素未超限但文件大于 20 MiB 时保留尺寸、转为 JPEG 压缩。处理后的上传文件不得超过 20 MiB。
+3. 选择预设，心情必选，补充文本最多 120 字。
+4. 点击“上传并创建任务”。客户端按如下顺序执行：
    - `POST /api/uploads` 请求单 key 上传凭证；
    - 浏览器将 multipart 文件内容直传 `QINIU_UPLOAD_URL`；
    - `POST /api/jobs` 提交 upload ID、preset、白名单参数和幂等 UUID；
    - 页面查看 `GET /api/jobs/{id}` 状态。
-4. 收到任务已排队表示直传和任务持久化已完成，**不代表已生成**。由于 worker 尚未实现，状态目前保持 `queued`。
+5. 收到任务已排队表示图片处理、直传和任务持久化已完成，**不代表已生成**。由于 worker 尚未实现，状态目前保持 `queued`。
 
 页面 API 调用示例（须使用有效的用户 Cookie；实际测试建议直接从登录浏览器操作，避免手动复制会话令牌）：
 
@@ -104,6 +105,7 @@ Cookie: <user-session-cookie>
 | 浏览器上传报 CORS / Network Error | 核对七牛 bucket CORS 是否包含当前 origin、POST/OPTIONS、HTTPS endpoint；检查 region endpoint 是否匹配 |
 | `/api/jobs` 返回 `422 upload_not_found_in_storage` | 确认浏览器上传请求确实成功且 key/token 没有被重复覆盖；等待服务端检查日志 |
 | `/api/jobs` 返回 `422 upload_object_mismatch` | 声明大小、Kodo stat 大小或 MIME 不匹配；使用支持的真实图片文件重试 |
+| 原图很大或像素很多 | 上传前在浏览器自动缩放/转 JPEG；不会把原始图片字节发给 Next.js。若浏览器无法解码（设备内存不足或格式损坏），换用普通 JPEG/PNG/WebP 图片 |
 | `429 active_job_limit` | 该用户已有未完成任务；当前 worker 尚未消费队列，等 worker 接入后处理 |
 | 任务长时间显示 `queued` | 当前预期状态：ComfyUI worker 未接入，不要将队列状态当成生成中 |
 
