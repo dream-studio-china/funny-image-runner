@@ -42,13 +42,13 @@ function signature(secret: string, input: string): string {
   return urlSafeBase64(createHmac("sha1", secret).update(input).digest());
 }
 
-export function createUploadCredential(key: string, maxBytes = MAX_UPLOAD_BYTES): { uploadUrl: string; uploadToken: string; expiresAt: Date } {
+export function createUploadCredential(key: string, maxBytes = MAX_UPLOAD_BYTES, insertOnly = true): { uploadUrl: string; uploadToken: string; expiresAt: Date } {
   const settings = config();
   const expiresInSeconds = 10 * 60;
   const policy = {
     scope: `${settings.bucket}:${key}`,
     deadline: Math.floor(Date.now() / 1000) + expiresInSeconds,
-    insertOnly: 1,
+    ...(insertOnly ? { insertOnly: 1 } : {}),
     fsizeLimit: maxBytes,
     mimeLimit: ALLOWED_IMAGE_TYPES.join(";"),
   };
