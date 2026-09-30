@@ -2,7 +2,7 @@ import { isAdminRequest } from "@/lib/admin-auth";
 import { getPool } from "@/lib/db";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson } from "@/lib/http";
 import { getStoredPresets, recordPresetUpdate } from "@/lib/preset-store";
-import { hasValidPresetNodeMapping } from "@/lib/preset-validation";
+import { hasRequiredPresetPrompts, hasValidPresetNodeMapping } from "@/lib/preset-validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,6 +27,7 @@ type PresetUpdate = {
   negativePrompt?: string | null;
   additional?: Record<string, unknown> | null;
   nodeMapping?: Record<string, unknown> | null;
+  workflowConfigId?: string | null;
 };
 
 function isHexColor(value: unknown): value is string {
@@ -48,6 +49,7 @@ function validatePreset(value: unknown): value is PresetUpdate {
     typeof value.enabled === "boolean" &&
     (value.categoryId === undefined || (typeof value.categoryId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(value.categoryId))) &&
     (value.coverAssetId === undefined || value.coverAssetId === null || typeof value.coverAssetId === "string") &&
+    (value.workflowConfigId === undefined || value.workflowConfigId === null || (typeof value.workflowConfigId === "string" && /^[a-z0-9][a-z0-9-]{1,79}$/.test(value.workflowConfigId))) &&
     [value.workflow, value.additional, value.nodeMapping].every((item) => item === undefined || item === null || (isRecord(item) && JSON.stringify(item).length <= 100_000)) &&
     [value.prompt, value.negativePrompt].every((item) => item === undefined || item === null || (typeof item === "string" && item.length <= 20_000));
 }
@@ -66,8 +68,9 @@ export async function PATCH(request: Request, { params }: Context): Promise<Resp
     return jsonResponse({ error: "invalid_json" }, 400);
   }
   if (!validatePreset(body)) return jsonResponse({ error: "invalid_preset" }, 400);
-  if (body.enabled && (!body.workflow || Object.keys(body.workflow).length === 0)) return jsonResponse({ error: "workflow_required" }, 400);
-  if (body.workflow && Object.keys(body.workflow).length > 0 && !hasValidPresetNodeMapping(body.workflow, body.nodeMapping, body.prompt, body.negativePrompt)) return jsonResponse({ error: "invalid_node_mapping" }, 400);
+  if (body.enabled && body.workflowConfigId === null) return jsonResponse({ error: "workflow_config_required" }, 400);
+  if (body.workflowConfigId === undefined && body.enabled && (!body.workflow || Object.keys(body.workflow).length === 0)) return jsonResponse({ error: "workflow_required" }, 400);
+  if (body.workflowConfigId === undefined && body.workflow && Object.keys(body.workflow).length > 0 && !hasValidPresetNodeMapping(body.workflow, body.nodeMapping, body.prompt, body.negativePrompt)) return jsonResponse({ error: "invalid_node_mapping" }, 400);
 
   const { id } = await params;
   try {
@@ -92,11 +95,27 @@ export async function PATCH(request: Request, { params }: Context): Promise<Resp
       if ("affectedRows" in result && result.affectedRows === 0) { await connection.rollback(); return jsonResponse({ error: "preset_not_found" }, 404); }
       const [versionRows] = await connection.execute("SELECT version FROM presets WHERE id=?", [id]);
       const version = Number((versionRows as Array<{version:number}>)[0]?.version);
-      const [priorRows] = await connection.execute("SELECT workflow,prompt,negative_prompt AS negativePrompt,additional,node_mapping AS nodeMapping FROM preset_versions WHERE preset_id=? AND version=?", [id, version - 1]);
+      const [priorRows] = await connection.execute("SELECT workflow,prompt,negative_prompt AS negativePrompt,additional,node_mapping AS nodeMapping,workflow_config_id AS workflowConfigId,workflow_config_version AS workflowConfigVersion FROM preset_versions WHERE preset_id=? AND version=?", [id, version - 1]);
       const prior = (priorRows as Array<Record<string, unknown>>)[0] ?? {};
+      let configId = body.workflowConfigId === undefined ? prior.workflowConfigId == null ? null : String(prior.workflowConfigId) : body.workflowConfigId;
+      let configVersion = body.workflowConfigId === undefined ? prior.workflowConfigVersion == null ? null : Number(prior.workflowConfigVersion) : null;
+      if (body.workflowConfigId) {
+        const [configs] = await connection.execute("SELECT id,version,workflow,node_mapping AS nodeMapping,enabled FROM workflow_configs WHERE id=? FOR UPDATE", [body.workflowConfigId]);
+        const config = (configs as Array<Record<string, unknown>>)[0];
+        if (!config) { await connection.rollback(); return jsonResponse({ error: "workflow_config_not_found" }, 400); }
+        if (body.enabled && !Boolean(config.enabled)) { await connection.rollback(); return jsonResponse({ error: "workflow_config_disabled" }, 400); }
+        const configWorkflow = typeof config.workflow === "string" ? JSON.parse(config.workflow) as unknown : config.workflow;
+        const configMapping = typeof config.nodeMapping === "string" ? JSON.parse(config.nodeMapping) as unknown : config.nodeMapping;
+        if (body.enabled && !hasRequiredPresetPrompts(configMapping, body.prompt ?? prior.prompt, body.negativePrompt ?? prior.negativePrompt)) { await connection.rollback(); return jsonResponse({ error: "preset_prompt_required" }, 400); }
+        if (!hasValidPresetNodeMapping(configWorkflow, configMapping, body.prompt ?? prior.prompt, body.negativePrompt ?? prior.negativePrompt)) { await connection.rollback(); return jsonResponse({ error: "invalid_node_mapping" }, 400); }
+        prior.workflow = configWorkflow; prior.nodeMapping = configMapping;
+        configId = String(config.id); configVersion = Number(config.version);
+      } else if (body.workflowConfigId === null) { configId = null; configVersion = null; }
       const val = (key: string, prev: string) => body[key as keyof PresetUpdate] === undefined ? prior[prev] ?? null : body[key as keyof PresetUpdate];
-      const versionValues = [id, version, val("workflow","workflow") ? JSON.stringify(val("workflow","workflow")) : null, val("prompt","prompt"), val("negativePrompt","negativePrompt"), val("additional","additional") ? JSON.stringify(val("additional","additional")) : null, val("nodeMapping","nodeMapping") ? JSON.stringify(val("nodeMapping","nodeMapping")) : null] as (string | number | null)[];
-      await connection.execute("INSERT INTO preset_versions (preset_id,version,workflow,prompt,negative_prompt,additional,node_mapping) VALUES (?,?,?,?,?,?,?)", versionValues);
+      const snapshotWorkflow = body.workflowConfigId !== undefined && body.workflowConfigId !== null ? prior.workflow : val("workflow","workflow");
+      const snapshotMapping = body.workflowConfigId !== undefined && body.workflowConfigId !== null ? prior.nodeMapping : val("nodeMapping","nodeMapping");
+      const versionValues = [id, version, snapshotWorkflow ? JSON.stringify(snapshotWorkflow) : null, val("prompt","prompt"), val("negativePrompt","negativePrompt"), val("additional","additional") ? JSON.stringify(val("additional","additional")) : null, snapshotMapping ? JSON.stringify(snapshotMapping) : null, configId, configVersion] as (string | number | null)[];
+      await connection.execute("INSERT INTO preset_versions (preset_id,version,workflow,prompt,negative_prompt,additional,node_mapping,workflow_config_id,workflow_config_version) VALUES (?,?,?,?,?,?,?,?,?)", versionValues);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
     await recordPresetUpdate(id);

@@ -43,6 +43,13 @@
       "when": 1790737000000,
       "tag": "0005_preset_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1790738000000,
+      "tag": "0006_workflow_registry",
+      "breakpoints": true
     }
   ]
 }

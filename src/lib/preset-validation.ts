@@ -23,9 +23,18 @@ export function hasValidPresetNodeMapping(
   if (!exists(nodeMapping.inputImage)) return false;
   if (!Array.isArray(nodeMapping.outputNodeIds) || nodeMapping.outputNodeIds.length === 0 ||
       !nodeMapping.outputNodeIds.every((id) => typeof id === "string" && Object.hasOwn(nodes, id))) return false;
+  if (nodeMapping.prompt !== undefined && !exists(nodeMapping.prompt)) return false;
+  if (nodeMapping.negativePrompt !== undefined && !exists(nodeMapping.negativePrompt)) return false;
   if (typeof prompt === "string" && prompt.trim() && !exists(nodeMapping.prompt)) return false;
   if (typeof negativePrompt === "string" && negativePrompt.trim() && !exists(nodeMapping.negativePrompt)) return false;
   if (nodeMapping.additional !== undefined && (!isRecord(nodeMapping.additional) ||
       Object.values(nodeMapping.additional).some((reference) => !exists(reference)))) return false;
+  return true;
+}
+
+export function hasRequiredPresetPrompts(nodeMapping: unknown, prompt: unknown, negativePrompt: unknown): boolean {
+  if (!isRecord(nodeMapping)) return false;
+  if (nodeMapping.prompt !== undefined && (typeof prompt !== "string" || !prompt.trim())) return false;
+  if (nodeMapping.negativePrompt !== undefined && typeof negativePrompt !== "string") return false;
   return true;
 }

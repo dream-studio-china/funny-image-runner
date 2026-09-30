@@ -107,8 +107,21 @@ export const presetVersions = mysqlTable("preset_versions", {
   negativePrompt: text("negative_prompt"),
   additional: json("additional").$type<Record<string, unknown> | null>(),
   nodeMapping: json("node_mapping").$type<Record<string, unknown> | null>(),
+  workflowConfigId: varchar("workflow_config_id", { length: 80 }),
+  workflowConfigVersion: int("workflow_config_version"),
   createdAt: createdAt(),
 }, (table) => [uniqueIndex("preset_versions_id_version_uq").on(table.presetId, table.version)]);
+
+export const workflowConfigs = mysqlTable("workflow_configs", {
+  id: varchar("id", { length: 80 }).primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  version: int("version").notNull().default(1),
+  workflow: json("workflow").$type<Record<string, unknown>>().notNull(),
+  nodeMapping: json("node_mapping").$type<Record<string, unknown>>().notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+});
 
 export const authRateLimits = mysqlTable("auth_rate_limits", {
   keyHash: char("key_hash", { length: 64 }).primaryKey(),

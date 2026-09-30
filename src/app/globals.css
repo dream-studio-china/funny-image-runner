@@ -123,3 +123,4 @@ button:disabled{cursor:not-allowed}
 @media(max-width:760px){.catalog-admin{grid-template-columns:1fr}.catalog-row{gap:8px}.catalog-form-grid{grid-template-columns:1fr}.catalog-dialog{padding:16px}.catalog-form input[type=file]{max-width:100%}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.marquee-track,.progress-orb{animation:none}*,*::before,*::after{transition-duration:.01ms!important}}
 .catalog-cover-preview{width:100%;max-width:260px;aspect-ratio:1.6;border-radius:9px;background:#f0eaf4 center/cover no-repeat;border:1px solid #e9e1ed}.category-filters button{background-position:center;background-size:cover}
+.workflow-list{margin-bottom:18px}.workflow-version,.workflow-selected{color:#8d8293;font-size:11px;line-height:1.6}.workflow-selected{display:block;color:#7152a3}.workflow-list .catalog-row{min-height:68px}.catalog-form select{min-height:39px}
