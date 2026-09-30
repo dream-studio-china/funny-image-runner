@@ -87,6 +87,26 @@ export function createPrivateDownloadUrl(key: string, ttlSeconds = 300): string 
   return `${unsignedUrl}&token=${downloadToken}`;
 }
 
+export function createPrivateImageViewUrl(
+  key: string,
+  options: { mode: 0 | 1 | 2 | 3 | 4 | 5; width: number; height?: number; quality?: number; format?: "jpg" | "png" | "webp" },
+  ttlSeconds = 300,
+): string {
+  const settings = config();
+  const deadline = Math.floor(Date.now() / 1000) + ttlSeconds;
+  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
+  const operation = [
+    `imageView2/${options.mode}`,
+    `w/${options.width}`,
+    ...(options.height ? [`h/${options.height}`] : []),
+    ...(options.quality ? [`q/${options.quality}`] : []),
+    ...(options.format ? [`format/${options.format}`] : []),
+  ].join("/");
+  const unsignedUrl = `${settings.privateDomain}/${encodedKey}?${operation}&e=${deadline}`;
+  const downloadToken = `${settings.accessKey}:${signature(settings.secretKey, unsignedUrl)}`;
+  return `${unsignedUrl}&token=${downloadToken}`;
+}
+
 export async function deletePrivateObject(key: string): Promise<"deleted" | "not_found"> {
   const settings = config();
   const path = `/delete/${urlSafeBase64(`${settings.bucket}:${key}`)}`;

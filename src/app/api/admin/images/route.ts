@@ -3,7 +3,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { isAdminRequest } from "@/lib/admin-auth";
 import { getPool } from "@/lib/db";
 import { isRecord, isSameOriginRequest, jsonResponse, readJson } from "@/lib/http";
-import { createPrivateDownloadUrl, deletePrivateObject } from "@/lib/qiniu";
+import { createPrivateImageViewUrl, deletePrivateObject } from "@/lib/qiniu";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -126,7 +126,8 @@ export async function GET(request: Request): Promise<Response> {
         jobStatus: row.jobStatus, contentType: row.contentType, size: Number(row.size),
         storageKey: row.objectKey, createdAt: row.createdAt, deletedAt: row.deletedAt,
         coverReferences: row.coverReferences,
-        url: row.deletedAt ? null : createPrivateDownloadUrl(row.objectKey, 3600),
+        thumbnailUrl: row.deletedAt ? null : createPrivateImageViewUrl(row.objectKey, { mode: 1, width: 480, height: 416, quality: 74, format: "webp" }, 3600),
+        previewUrl: row.deletedAt ? null : createPrivateImageViewUrl(row.objectKey, { mode: 2, width: 1600, height: 1400, quality: 86, format: "webp" }, 3600),
       })),
     });
   } catch (error) {

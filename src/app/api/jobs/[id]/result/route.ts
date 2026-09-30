@@ -2,7 +2,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/auth";
 import { jsonResponse } from "@/lib/http";
-import { createPrivateDownloadUrl } from "@/lib/qiniu";
+import { createPrivateDownloadUrl, createPrivateImageViewUrl } from "@/lib/qiniu";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +33,7 @@ export async function GET(request: Request, { params }: Context): Promise<Respon
       index: output.index,
       contentType: output.contentType,
       url: createPrivateDownloadUrl(output.objectKey as string),
+      previewUrl: createPrivateImageViewUrl(output.objectKey as string, { mode: 2, width: 1100, height: 900, quality: 84, format: "webp" }),
     })) });
   } catch (error) {
     console.error("Job result lookup failed", error instanceof Error ? error.message : "unknown error");

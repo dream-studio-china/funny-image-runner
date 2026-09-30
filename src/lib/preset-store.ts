@@ -3,7 +3,7 @@ import type { RowDataPacket } from "mysql2/promise";
 import { randomUUID } from "node:crypto";
 import { getPool } from "@/lib/db";
 import { presets as defaults, type Preset } from "@/lib/presets";
-import { createPrivateDownloadUrl } from "@/lib/qiniu";
+import { createPrivateDownloadUrl, createPrivateImageViewUrl } from "@/lib/qiniu";
 
 export type StoredPreset = Preset & { enabled: boolean; workerConfig: Record<string, unknown> | null; updatedAt: string; categoryId: string | null; coverAssetId: string | null; coverKey: string | null; workflow: Record<string, unknown> | null; prompt: string | null; negativePrompt: string | null; additional: Record<string, unknown> | null; nodeMapping: Record<string, unknown> | null; workflowConfigId: string | null; workflowConfigVersion: number | null };
 
@@ -45,4 +45,9 @@ export async function getPresetCategories(includeDisabled = false): Promise<RowD
   return rows;
 }
 export function signedCover(key: unknown): string | null { return typeof key === "string" && key ? createPrivateDownloadUrl(key, 3600) : null; }
+export function signedCoverVariant(key: unknown, options: { mode: 1 | 2; width: number; height: number; quality?: number }): string | null {
+  return typeof key === "string" && key
+    ? createPrivateImageViewUrl(key, { ...options, quality: options.quality ?? 74, format: "webp" }, 3600)
+    : null;
+}
 export async function recordPresetUpdate(id: string): Promise<void> { await getPool().execute("INSERT INTO audit_events (id,actor_type,action,target_id,created_at) VALUES (?,'admin','preset.updated',?,UTC_TIMESTAMP(3))", [randomUUID(),id]); }
