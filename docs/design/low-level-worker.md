@@ -2,7 +2,7 @@
 
 关联：[总体设计](./high-level-design.md) · [预设](./low-level-presets.md) · [任务 API](./low-level-jobs.md) · [存储](./low-level-storage.md)
 
-**实现状态：**本文件目前是 worker 的目标设计，不代表仓库已有 worker 程序。云端可创建和查询队列任务；worker、ComfyUI 调用与输出回传需在 API 格式 workflow 确认后实现。
+**实现状态：**仓库包含 `scripts/comfyui-worker.mjs` 和 `/api/worker/*` 云端接口；常驻 Worker 可在 ComfyUI 同机运行。真实生成仍需部署时配置云端/本机 `WORKER_TOKEN`、启动 Worker，并在后台填写并验证对应 ComfyUI API workflow。后台当前没有 Worker 在线心跳展示。
 
 ## 进程与依赖
 
@@ -12,12 +12,12 @@
 
 ## 执行步骤
 
-1. 以 worker Bearer 请求 `POST /api/worker/jobs/claim`；空队列建议 3–5 秒加抖动后再轮询。首版串行处理一个任务；领取后启动独立心跳循环。
-2. 读任务 `presetId@version`，经受保护接口读取**同一版本**的工作流、正向/负向 prompt、固定 additional JSON 与节点映射；缺失配置立即返回可诊断错误，不得使用最新版本代替。取一次性输入下载链接，下载到受限临时目录，限制下载大小、解码后的像素尺寸及格式。
-3. 将图像以 multipart `POST /upload/image` 上传到 ComfyUI `input` 区，取得 ComfyUI 返回的文件名；更新 phase 为 `input_ready`。不要让 workflow 直接读七牛 URL。
-4. 深拷贝该版本 API workflow，将返回的图片文件名写入 `LoadImage` 等指定输入节点，将固定正向/负向 prompt、管理员 additional JSON 与经过校验的用户参数分别应用于声明的节点/输入映射；不复用已改写对象。生成稳定 `prompt_id`（UUID）；通过 heartbeat **先持久化** `prompt_id` 与 `prompt_submitting`，再向 `POST /prompt` 提交 `{prompt,client_id,prompt_id}`。
-5. 接收提交响应并核对 `prompt_id`；持续用 `/history/{prompt_id}` 检查终态，可选用 `/ws?clientId=...` 加速进度感知，但不能仅依赖 WebSocket 事件判断最终结果。将 phase 更新为 `prompt_submitted`，并持续续租。
-6. 从 history 中声明的输出节点读取图片元信息，向 `/view?filename=...&subfolder=...&type=output` 取图；验证内容和尺寸。向云端申请每张输出的限定上传凭证，将结果直传七牛，最后调用 `complete`。清理临时文件。
+1. 以 worker Bearer 请求 `POST /api/worker/jobs/claim`；空队列以 `WORKER_POLL_INTERVAL_MS`（默认 4 秒）加抖动后再轮询。首版串行处理一个任务；领取后启动独立心跳循环。
+2. 读任务 `presetId@version`，经受保护接口读取**同一版本**的工作流、正向/负向 prompt、固定 additional JSON 与节点映射；缺失配置报告明确错误，不得使用最新版本代替。取一次性输入下载链接，下载到内存缓冲区并限制下载大小/MIME。
+3. 将图像以 multipart `POST /upload/image` 上传到 ComfyUI `input` 区，取得 ComfyUI 返回的文件名；更新 phase。不要让 workflow 直接读七牛 URL。
+4. 深拷贝该版本 API workflow，将返回的图片文件名写入映射节点，并应用固定提示词、additional JSON 及经校验的用户参数。先 heartbeat 写入 `prompt_submitting`（此时尚无 ComfyUI prompt ID），再向 `/prompt` 提交 `{prompt,client_id}`。ComfyUI 生成并返回真实的 `prompt_id` 后，立刻 heartbeat 持久化真实 ID 和 `generating` phase；不可向 ComfyUI 传入自造 ID。
+5. 持续用 `/history/{prompt_id}` 检查终态。重新领取已保存真实 `prompt_id` 的过期租约时，先查 history/queue 并恢复轮询，不能重新提交。若 `prompt_submitting` 已过期但没有真实 ID，云端将任务标为 `execution_uncertain`，不自动重放。
+6. 从 history 中声明的输出节点读取图片元信息，向 `/view?filename=...&subfolder=...&type=output` 取图；验证内容和大小。向云端申请每张输出的限定上传凭证，将结果直传七牛，再调用 `complete`。同一 job/index 的输出 key 可覆盖，便于在上传成功但完成响应丢失时幂等重传。
 
 ComfyUI 使用原生本地服务 API，路径为 `/upload/image`、`/prompt`、`/history/{prompt_id}`、`/view`，不要把 Cloud API 的 `/api/*` 前缀用于本地服务。HTTP 请求设超时，预设任务设最长执行时间；只在 worker 日志里记录 `job_id`、阶段和错误码，不记录原始图像、用户补充文本或签名链接。
 

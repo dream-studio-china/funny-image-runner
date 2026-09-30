@@ -1,6 +1,6 @@
 # Runbook：七牛直传与任务 API
 
-本 runbook 配置七牛 Kodo 私有空间，并验证浏览器直传和 MySQL 队列任务。当前没有 ComfyUI worker：成功创建的任务会停留在 `queued`，不会生成图片。
+本 runbook 配置七牛 Kodo 私有空间，并验证浏览器直传和 MySQL 队列任务。要执行真实 ComfyUI 生成，还需按[本机 Worker runbook](./comfyui-worker.md)配置并启动 Worker；Worker 离线时任务仍会留在 `queued`。
 
 ## 前置条件
 
@@ -63,7 +63,7 @@ curl --fail --silent --show-error http://localhost:3000/api/health
    - 浏览器将 multipart 文件内容直传 `QINIU_UPLOAD_URL`；
    - `POST /api/jobs` 提交 upload ID、preset、白名单参数和幂等 UUID；
    - 页面查看 `GET /api/jobs/{id}` 状态。
-5. 收到任务已排队表示图片处理、直传和任务持久化已完成，**不代表已生成**。由于 worker 尚未实现，状态目前保持 `queued`。
+5. 收到任务已排队表示图片处理、直传和任务持久化已完成，**不代表已生成**。Worker 在线且预设版本已配置可执行 workflow 后才会开始生成。
 
 页面 API 调用示例（须使用有效的用户 Cookie；实际测试建议直接从登录浏览器操作，避免手动复制会话令牌）：
 
@@ -106,9 +106,9 @@ Cookie: <user-session-cookie>
 | `/api/jobs` 返回 `422 upload_not_found_in_storage` | 确认浏览器上传请求确实成功且 key/token 没有被重复覆盖；等待服务端检查日志 |
 | `/api/jobs` 返回 `422 upload_object_mismatch` | 声明大小、Kodo stat 大小或 MIME 不匹配；使用支持的真实图片文件重试 |
 | 原图很大或像素很多 | 上传前在浏览器自动缩放/转 JPEG；不会把原始图片字节发给 Next.js。若浏览器无法解码（设备内存不足或格式损坏），换用普通 JPEG/PNG/WebP 图片 |
-| `429 active_job_limit` | 该用户已有未完成任务；当前 worker 尚未消费队列，等 worker 接入后处理 |
-| 任务长时间显示 `queued` | 当前预期状态：ComfyUI worker 未接入，不要将队列状态当成生成中 |
+| `429 active_job_limit` | 该用户已有未完成任务；检查 Worker 是否在线并正在处理队列 |
+| 任务长时间显示 `queued` | 确认本机 Worker 正在运行、`WORKER_TOKEN` 与云端一致、网络可达；确认该预设的当前版本 workflow 已启用且 ComfyUI 本机可用 |
 
 ## 当前不支持
 
-worker 下载输入、ComfyUI workflow 执行、输出上传、对象生命周期清理和 worker 自动重试都仍待实现。首版上传过期记录/孤儿文件尚无自动清理作业；测试时避免上传隐私或不必要的大文件，正式开放前需要落实定期清理和保留期限。
+对象生命周期清理、上传过期记录/孤儿文件定期清理及后台 Worker 在线健康监控仍待实现。测试时避免上传隐私或不必要的大文件，正式开放前需要落实定期清理和保留期限。

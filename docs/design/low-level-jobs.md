@@ -11,7 +11,7 @@
 | `uploads` | `id UUID PK`, `user_id FK`, `object_key UNIQUE`, `content_type`, `declared_size`, `expires_at`, `consumed_job_id UNIQUE NULL`, `created_at`；索引 `(user_id, created_at DESC)` |
 | `jobs` | `id CHAR(36) PK`, `user_id FK`, `upload_id FK UNIQUE`, `idempotency_key CHAR(36)`, `request_hash`, `preset_id`, `preset_version`, `parameters JSON`, `status`, `phase`, `attempts`, `lease_token_hash`, `lease_until`, `prompt_id CHAR(36) UNIQUE NULL`, `error_code`, `created_at`, `updated_at`, `finished_at`；唯一索引 `(user_id, idempotency_key)`，另有 `(user_id, created_at)` 和待领任务 `(status, lease_until, created_at)` |
 | `job_outputs` | `job_id FK`, `index INT`, `object_key UNIQUE`, `content_type`, `size`；主键 `(job_id, index)` |
-| `preset_categories` / `presets` / `preset_versions` | 分类归属、当前公开展示字段、历史版本私有执行快照；详见[分类与风格设计](./low-level-presets.md) |
+| `preset_categories` / `presets` / `workflow_configs` / `preset_versions` | 分类归属、当前公开展示字段、可复用 workflow 配置目录、历史预设执行快照（含所选 Workflow ID/版本）；详见[分类与风格设计](./low-level-presets.md) |
 
 身份表定义见 [身份设计](./low-level-identity.md)。任务中的参数是快照，保留对应的 `preset_version`；版本表单独保存管理员配置的**不可变** workflow 快照，任务行不重复存储 workflow JSON。变更预设不能默默改写排队中的任务。限制用户参数 JSON 体积和字段数量。任务行只保存必要的对象引用，不保存签名 URL 或七牛凭证；版本表中的工作流/提示词属于私有配置，不返回用户 API。
 
@@ -43,15 +43,15 @@ running.phase = claimed | input_ready | prompt_submitting |
 
 ## worker API
 
-以下是目标 worker API 契约，当前 worker 进程及这些路由尚未实现；因此目前创建的任务会留在 `queued`，不会自动生成结果。
+Worker API 路由已实现，独立进程位于 `scripts/comfyui-worker.mjs`。任务会留在 `queued`，直到同机 Worker 使用有效 `WORKER_TOKEN` 在线轮询；实际生成还要求对应历史风格版本具有可用 workflow 并且 ComfyUI 模型/节点已安装。
 
-全部使用独立 Bearer 凭证、HTTPS。领取任务返回规范化参数和预设版本，但**不**直接返回七牛下载链接；所有写请求含租约令牌。令牌由领取时生成，仅其摘要入库，过期/错误令牌一律 409。
+全部使用独立 `WORKER_TOKEN` Bearer 凭证、HTTPS。领取任务返回规范化参数、预设版本、当前 phase 和可能已持久化的 ComfyUI `promptId`，但**不**直接返回七牛下载链接；所有写请求含租约令牌。令牌由领取时生成，仅其摘要入库，过期/错误令牌一律 409。ComfyUI 生成真实 prompt ID，不支持预先指定 ID。提交前先保存 `prompt_submitting`，拿到 `/prompt` 响应后保存真实 ID；未知提交结果不自动重放。
 
 | 路由 | 输入 / 作用 |
 | --- | --- |
-| `POST /api/worker/jobs/claim` | MySQL 8.0+ 事务中以 `FOR UPDATE SKIP LOCKED` 选最旧 `queued` 或过期 `running` 任务，设置 `running`、新租约、`attempts + 1`；空队列返回 204。若 RDS 小版本/事务隔离级别不支持该锁语义，使用条件 UPDATE 原子抢占 |
+| `POST /api/worker/jobs/claim` | MySQL 8.0+ 事务中以 `FOR UPDATE SKIP LOCKED` 选最旧 `queued` 或可恢复的过期 `running` 任务，设置 `running`、新租约、`attempts + 1` 并返回既有 phase/promptId；空队列返回 204。prompt 提交阶段过期且没有真实 promptId 的任务标记 `execution_uncertain`，不重新领取 |
 | `GET /api/worker/presets/{id}/versions/{version}` | 独立 worker Bearer 鉴权；只返回指定不可变版本的 workflow、提示词、附加参数及节点映射，不对用户/管理员浏览器开放；缺失或未配置返回明确错误 |
-| `POST /api/worker/jobs/{id}/heartbeat` | `{leaseToken, phase?, promptId?}`；仅当前持有者可续租和推进 phase；第一次提交 `promptId` 时必须在调用 ComfyUI `/prompt` **之前**写入 `prompt_submitting`，以后不得修改 ID |
+| `POST /api/worker/jobs/{id}/heartbeat` | `{leaseToken, phase, promptId?}`；仅当前持有者可续租和推进 phase；先写入 `prompt_submitting`，调用 ComfyUI `/prompt` 后再写入真实返回的 `promptId`；ID 一经保存不得修改 |
 | `POST /api/worker/jobs/{id}/input-url` | `{leaseToken}`；签发仅本任务输入的短期读链接 |
 | `POST /api/worker/jobs/{id}/output-upload` | `{leaseToken,index,contentType,size}`；签发限定任务结果 key 的上传凭证 |
 | `POST /api/worker/jobs/{id}/complete` | `{leaseToken,outputs:[{index,key,contentType,size}]}`；校验租约、对象 key 和七牛已存在对象，事务写入输出并置为 `succeeded` |

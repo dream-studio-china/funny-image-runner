@@ -21,11 +21,11 @@
 - ComfyUI 与常驻 worker 在同一台本地机器；Tailscale 用于对该机器的受限远程访问，不作为 Vercel 到 ComfyUI 的必经链路。
 - 持久化使用阿里云 RDS MySQL，应用层采用 Drizzle ORM + mysql2。
 - 邀请制；淘宝自动发货通过管理员 API 幂等签发可重复登录的邀请链接（直到过期或撤销），用户标识可由服务端根据稳定 customerRef 派生。人工/批量补发也支持本地私有 seed CLI。
-- `/admin` 管理后台已实现管理员会话、邀请码签发/撤销、用户启停和现有预设公开字段编辑；分类/风格弹窗管理、主展示图上传及管理员手动配置的 API workflow JSON、prompt、negative prompt 和固定 additional JSON 为下一阶段目标。ComfyUI 管理项仍是预留面板。
-- 登录用户可直传七牛并创建真实队列任务；任务接口和用户任务列表已接入 MySQL，实际生成仍待本地 worker。
+- `/admin` 管理后台已实现管理员会话、邀请码签发/撤销、用户启停、分类/风格目录和私有配置弹窗；展示图直传七牛，风格保存不可变 workflow 版本。
+- 登录用户可直传七牛并创建真实队列任务；独立本地 ComfyUI Worker、Worker API 和输出回传已接入。真实生成还需部署 Worker、设置共享 `WORKER_TOKEN` 并配置可执行 workflow、模型和节点依赖。
 - 分类将显示在首页供用户筛选风格；管理员为分类与风格上传展示图并维护风格的不可变工作流版本。用户端不接收或调整私有 workflow/固定 additional JSON。
 - 目前只有 ComfyUI 界面工作流；真正接入前需要导出 API 格式 JSON，由管理员在风格弹窗手动配置，并确认节点映射。
 
 ## 尚待提供的接入材料
 
-部署时须填入实际七牛区域上传 endpoint、bucket 和 HTTPS 私有下载域名；管理员环境还需设置登录后台和自动发码所需密钥。真正接入生成前仍需导出 ComfyUI API 格式 workflow JSON，确认输入/输出节点、正负提示词映射、模型和自定义节点依赖，并实现及部署常驻 worker。具体资费和资源配额由部署时选定；本文中的阈值标为“首版默认值”时可通过配置调整。
+部署时须填入实际七牛区域上传 endpoint、bucket 和 HTTPS 私有下载域名；管理员环境还需设置登录后台和自动发码所需密钥。生成部署还须设置云端及本地一致的 `WORKER_TOKEN`，导入经本机验证的 ComfyUI API 格式 workflow，确认正负提示词/图像/输出节点映射、模型和自定义节点依赖，并运行 `npm run start:worker`。具体资费和资源配额由部署时选定；本文中的阈值标为“首版默认值”时可通过配置调整。
