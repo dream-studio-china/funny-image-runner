@@ -84,6 +84,9 @@ export async function POST(request: Request): Promise<Response> {
   if (!body) return jsonResponse({ error: "invalid_job" }, 400);
 
   const preset = availablePresets.find((item) => item.id === body.presetId)!;
+  if (!preset.workflow || Object.keys(preset.workflow).length === 0) {
+    return jsonResponse({ error: "preset_not_ready" }, 409);
+  }
   const requestHash = digestBody(body, preset.version);
   const connection = await getPool().getConnection().catch(() => null);
   if (!connection) return jsonResponse({ error: "service_unavailable" }, 503);

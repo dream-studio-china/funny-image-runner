@@ -76,8 +76,39 @@ export const presets = mysqlTable("presets", {
   moods: json("moods").$type<string[]>().notNull(),
   enabled: boolean("enabled").notNull().default(true),
   workerConfig: json("worker_config").$type<Record<string, unknown> | null>(),
+  categoryId: varchar("category_id", { length: 80 }).notNull().default("general"),
+  coverAssetId: char("cover_asset_id", { length: 36 }),
   updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
 });
+
+export const presetCategories = mysqlTable("preset_categories", {
+  id: varchar("id", { length: 80 }).primaryKey(),
+  name: varchar("name", { length: 100 }).notNull(),
+  coverAssetId: char("cover_asset_id", { length: 36 }),
+  sortOrder: int("sort_order").notNull().default(0),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: createdAt(),
+  updatedAt: datetime("updated_at", { mode: "date", fsp: 3 }).notNull().default(sql`CURRENT_TIMESTAMP(3)`),
+}, (table) => [index("preset_categories_order_idx").on(table.sortOrder, table.id)]);
+
+export const presetAssets = mysqlTable("preset_assets", {
+  id: char("id", { length: 36 }).primaryKey(),
+  objectKey: varchar("object_key", { length: 512 }).notNull(),
+  contentType: varchar("content_type", { length: 100 }).notNull(),
+  size: int("size").notNull(),
+  createdAt: createdAt(),
+}, (table) => [uniqueIndex("preset_assets_object_key_uq").on(table.objectKey)]);
+
+export const presetVersions = mysqlTable("preset_versions", {
+  presetId: varchar("preset_id", { length: 80 }).notNull(),
+  version: int("version").notNull(),
+  workflow: json("workflow").$type<Record<string, unknown> | null>(),
+  prompt: text("prompt"),
+  negativePrompt: text("negative_prompt"),
+  additional: json("additional").$type<Record<string, unknown> | null>(),
+  nodeMapping: json("node_mapping").$type<Record<string, unknown> | null>(),
+  createdAt: createdAt(),
+}, (table) => [uniqueIndex("preset_versions_id_version_uq").on(table.presetId, table.version)]);
 
 export const authRateLimits = mysqlTable("auth_rate_limits", {
   keyHash: char("key_hash", { length: 64 }).primaryKey(),
